@@ -1,0 +1,362 @@
+/* ==========================================================================
+   1. TRANG CHỦ (HOME PAGE)
+   ========================================================================== */
+function renderHomePage() {
+  const root = document.getElementById('appRoot');
+
+  root.innerHTML = `
+    <!-- 1. Hero Section with 4-Slide Auto Rotating Slider & Vertical Text -->
+    <section class="hero">
+      <div class="hero-slider" id="heroSlider">
+        <div class="slide active" style="background-image: url('assets/images/hero_1.webp');"></div>
+        <div class="slide" style="background-image: url('assets/images/hero_2.webp');"></div>
+        <div class="slide" style="background-image: url('assets/images/hero_3.webp');"></div>
+        <div class="slide" style="background-image: url('assets/images/hero_4.webp');"></div>
+      </div>
+      <div class="vertical-text">SERENITY SPA &amp; RETREAT • DISTRICT 1 • SAIGON</div>
+      <div class="hero-content">
+        <h1>Best Massage Spa in <span>District 1</span>, HCM city</h1>
+        <p>Serenity Spa &amp; Wellness provides massage and wellness treatments in District 1, Ho Chi Minh City. Visit us at 285B Hoang Sa Street, Tan Dinh Ward, District 1, for a relaxing break in the city.</p>
+        <div class="hero-buttons">
+          <a href="#/booking" class="btn-primary">Đặt Lịch Ngay (Book Now)</a>
+          <a href="#/services" class="btn-outline-white">Khám Phá Dịch Vụ</a>
+        </div>
+      </div>
+    </section>
+
+    <!-- 2. Core Values / 4 USPs Block (Background #FBF8F1) -->
+    <section class="usp-section">
+      <div class="container" style="padding-top: 0; padding-bottom: 0;">
+        <div class="usp-grid">
+          <div class="usp-card">
+            <div class="usp-icon">📍</div>
+            <h3>Heart of District 1</h3>
+            <p>Serenity Spa &amp; Wellness tọa lạc tại 285B Đường Hoàng Sa, Phường Tân Định, Quận 1, TP. Hồ Chí Minh.</p>
+          </div>
+          <div class="usp-card">
+            <div class="usp-icon">💎</div>
+            <h3>Affordable Luxury</h3>
+            <p>Trải nghiệm spa nghỉ dưỡng tiêu chuẩn cao cấp với mức giá niêm yết rõ ràng, minh bạch, hoàn toàn không phụ phí.</p>
+          </div>
+          <div class="usp-card">
+            <div class="usp-icon">👐</div>
+            <h3>Expert Therapists</h3>
+            <p>Đội ngũ kỹ thuật viên giàu kinh nghiệm, chu đáo và giao tiếp tiếng Anh lưu loát, phục vụ chu đáo du khách quốc tế.</p>
+          </div>
+          <div class="usp-card">
+            <div class="usp-icon">🌿</div>
+            <h3>Cozy &amp; Private</h3>
+            <p>Không gian trị liệu thanh tịnh, phòng đơn, phòng đôi riêng tư và vô trùng tuyệt đối, cách ly hoàn toàn khỏi ồn ào phố thị.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 3. Welcome to Serenity Spa & Google Maps -->
+    <section class="container">
+      <div class="about-split">
+        <div class="about-content">
+          <span style="color: var(--primary-brown); font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 2px;">Về Chúng Tôi</span>
+          <h2 style="margin-top: 5px; margin-bottom: 20px;">Welcome to Serenity Spa &amp; Wellness</h2>
+          <p>Tọa lạc tại 285B Đường Hoàng Sa, Phường Tân Định, Quận 1, Serenity Spa cung cấp các liệu trình massage và chăm sóc sức khỏe.</p>
+          <p>Dù bạn ghé thăm để tận hưởng 60 phút massage chân thư giãn sau chuyến đi bộ quanh thành phố hay một buổi chiều trọn vẹn với các gói chăm sóc đặc quyền, chúng tôi luôn cam kết mang lại không khí bình yên, ấm áp như được trở về nhà.</p>
+          <ul class="about-checklist">
+            <li><span>✓</span> 100% tinh dầu thiên nhiên nguyên chất và thảo dược Việt Nam nấu tươi mỗi ngày</li>
+            <li><span>✓</span> Phòng đơn, phòng đôi và phòng gia đình riêng tư, sạch sẽ đạt tiêu chuẩn vô trùng</li>
+            <li><span>✓</span> Tặng kèm trà thảo mộc đón tiếp, ngâm chân hoa tươi và bánh ngọt dưỡng nhan miễn phí</li>
+          </ul>
+          <div style="margin-top: 30px; display: flex; gap: 15px; flex-wrap: wrap;">
+            <a href="#/about" class="btn-outline">Khám Phá Về Chúng Tôi</a>
+            <a href="#/booking" class="btn-primary">Đặt Lịch Trải Nghiệm</a>
+          </div>
+        </div>
+        <div class="about-img">
+          <img src="assets/images/about_welcome.webp" alt="Không gian Serenity Spa" style="width: 100%; border-radius: 8px; box-shadow: 0 15px 35px rgba(0,0,0,0.08);" />
+        </div>
+      </div>
+
+      <!-- Google Map Section for Serenity Spa -->
+      <div style="margin-top: 60px; border-radius: 8px; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,0.06);">
+        <div style="padding: 16px 20px; background: #fff; border-bottom: 1px solid var(--border-light); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+          <div>
+            <strong>📍 Địa chỉ spa:</strong> 285B Đường Hoàng Sa, Phường Tân Định, Quận 1, TP. Hồ Chí Minh
+          </div>
+          <a href="https://www.google.com/maps/search/?api=1&amp;query=285B%20Hoang%20Sa%20Street%2C%20Tan%20Dinh%20Ward%2C%20District%201%2C%20Ho%20Chi%20Minh%20City" target="_blank" rel="noopener" class="btn-outline" style="padding: 6px 14px; font-size: 11px;">
+            Mở Trên Google Maps ↗
+          </a>
+        </div>
+        <iframe
+          src="https://www.google.com/maps/embed?pb=!1m18!1m12!1m3!1d3919.5398246816556!2d106.688195!3d10.765691!2m3!1f0!2f0!3f0!3m2!1i1024!2i768!4f13.1!3m3!1m2!1s0x31752f190c1f5167%3A0xb35a0f12bb09c95d!2zMTU0IEPDtG5nIFF14buzbmgsIFBoxrDhu51uZyBQaOG6oW0gTmfFqSBMw6NvLCBRdeG6rW4gMSwgSOG7kyBDaMOtIE1pbmgsIFZpZXRuYW0!5e0!3m2!1sen!2s!4v1700000000000!5m2!1sen!2s"
+          width="100%"
+          height="320"
+          style="border:0; display:block;"
+          allowfullscreen=""
+          loading="lazy"
+          referrerpolicy="no-referrer-when-downgrade">
+        </iframe>
+      </div>
+    </section>
+
+    <!-- 4. Discover Our Spa Massages (4 Tab Menu + Filtered Cards Grid) -->
+    <section class="container" style="background-color: var(--bg-light); max-width: 100%; padding-left: 20px; padding-right: 20px;">
+      <div style="max-width: 1240px; margin: 0 auto;">
+        <div class="section-title-center">
+          <span style="color: var(--primary-brown); font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 2px;">Thực Đơn Trị Liệu</span>
+          <h2 style="margin-top: 5px;">Discover Our Spa Massages</h2>
+          <p>Thực đơn trị liệu phong phú được thiết kế chuẩn mực nhằm tái tạo năng lượng và phục hồi thể trạng cho bạn</p>
+        </div>
+
+        <!-- 4 Service Category Tabs -->
+        <div class="service-tabs" style="display: flex; justify-content: center; gap: 12px; margin-bottom: 40px; flex-wrap: wrap;">
+          <button type="button" class="tab-btn active" data-home-cat="body-massages">Body Massages</button>
+          <button type="button" class="tab-btn" data-home-cat="focus-therapy">Focus Therapy</button>
+          <button type="button" class="tab-btn" data-home-cat="hair-spa">Others &amp; Hair Wash</button>
+          <button type="button" class="tab-btn" data-home-cat="packages">Spa Packages</button>
+        </div>
+
+        <!-- Dynamic Package Cards Grid -->
+        <div class="packages-grid" id="homeServicesGrid">
+          ${SERVICES_DATA.filter(s => s.category === 'body-massages').map(s => renderPackageCardHtml(s)).join('')}
+        </div>
+
+        <div style="text-align: center; margin-top: 50px;">
+          <a href="#/services" class="btn-outline">Xem Toàn Bộ Thực Đơn &amp; Bảng Giá →</a>
+        </div>
+      </div>
+    </section>
+
+    <!-- 5. Healing Journey 4-Step Procedure -->
+    <section class="healing-journey">
+      <div class="container" style="padding-top: 0; padding-bottom: 0;">
+        <div class="section-title-center" style="margin-bottom: 20px;">
+          <span style="color: var(--primary-brown); font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 2px;">Quy Trình Chuẩn Mực</span>
+          <h2 style="margin-top: 5px;">Hành Trình Chữa Lành Thân - Tâm - Trí</h2>
+          <p>Quy trình 4 bước chăm sóc tiêu chuẩn mang lại sự thư giãn trọn vẹn nhất cho bạn</p>
+        </div>
+        <div class="journey-steps">
+          <div class="step-item">
+            <div class="step-number">01</div>
+            <h3>Đón Tiếp &amp; Thưởng Trà</h3>
+            <p>Thư giãn tại sảnh ấm cúng, thưởng thức tách trà thảo mộc ấm và ngâm chân hoa tươi thanh lọc cơ thể.</p>
+          </div>
+          <div class="step-item">
+            <div class="step-number">02</div>
+            <h3>Tư Vấn Thể Trạng</h3>
+            <p>Thăm khám các điểm đau mỏi cơ bắp và chọn loại tinh dầu thảo dược yêu thích phù hợp thể trạng.</p>
+          </div>
+          <div class="step-item">
+            <div class="step-number">03</div>
+            <h3>Trị Liệu Chuyên Sâu</h3>
+            <p>Tận hưởng kỹ thuật ấn huyệt trượt sâu của chuyên viên kết hợp chườm ấm đá núi lửa hoặc thảo dược.</p>
+          </div>
+          <div class="step-item">
+            <div class="step-number">04</div>
+            <h3>Hồi Phục Sinh Lực</h3>
+            <p>Tráng nước ấm thơm dịu, thưởng thức bánh hạt dinh dưỡng và trà dưỡng nhan trước khi ra về.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 6. What Our Guests Say (5.0 Google Rating & Traveler Reviews) -->
+    <section class="container" style="padding-top: 60px; padding-bottom: 60px;">
+      <div class="section-title-center">
+        <span style="color: var(--primary-brown); font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 2px;">Đánh Giá Từ Khách Hàng</span>
+        <h2 style="margin-top: 5px;">What Our Guests Say</h2>
+        <div style="display: inline-flex; align-items: center; gap: 8px; margin-top: 10px; background: #fff; padding: 8px 18px; border-radius: 30px; box-shadow: 0 4px 15px rgba(0,0,0,0.05);">
+          <span style="font-weight: 700; color: #4285F4; font-size: 1.1rem;">G</span><span style="font-weight: 700; color: #EA4335; font-size: 1.1rem;">o</span><span style="font-weight: 700; color: #FBBC05; font-size: 1.1rem;">o</span><span style="font-weight: 700; color: #4285F4; font-size: 1.1rem;">g</span><span style="font-weight: 700; color: #34A853; font-size: 1.1rem;">l</span><span style="font-weight: 700; color: #EA4335; font-size: 1.1rem;">e</span>
+          <span style="color: #F4B400; font-size: 1.1rem;">★★★★★</span>
+          <strong style="color: var(--text-dark);">5.0 / 5.0</strong>
+          <span style="color: var(--text-muted); font-size: 0.85rem;">(450+ Đánh giá thực tế)</span>
+        </div>
+      </div>
+
+      <div class="reviews-grid">
+        <div class="review-card">
+          <div class="review-stars">★★★★★</div>
+          <p class="review-text">"The best massage in Saigon hands down! The hot stone and herbal foot soak were heavenly after walking in District 1 all day. Spotlessly clean and very polite staff."</p>
+          <div class="reviewer-info" style="display: flex; align-items: center; gap: 12px; margin-top: 15px;">
+            <div style="width: 42px; height: 42px; border-radius: 50%; background: #E9ECEF; display: flex; align-items: center; justify-content: center; font-weight: bold; color: #495057;">SJ</div>
+            <div>
+              <div class="reviewer-name">Sarah Jenkins</div>
+              <div class="reviewer-source">🇦🇺 Sydney, Australia • Google Review</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="review-card">
+          <div class="review-stars">★★★★★</div>
+          <p class="review-text">"Quiet sanctuary in the middle of bustling Saigon. Very professional staff and fluent English. The signature massage relieved all my back stiffness completely."</p>
+          <div class="reviewer-info" style="display: flex; align-items: center; gap: 12px; margin-top: 15px;">
+            <div style="width: 42px; height: 42px; border-radius: 50%; background: #E9ECEF; display: flex; align-items: center; justify-content: center; font-weight: bold; color: #495057;">MC</div>
+            <div>
+              <div class="reviewer-name">Michael Chen</div>
+              <div class="reviewer-source">🇸🇬 Singapore • Google Review</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="review-card">
+          <div class="review-stars">★★★★★</div>
+          <p class="review-text">"Clean, private rooms and authentic technique. We did the Melt Away Journey package and it was worth every penny. Free herbal tea and sweet soup were delicious!"</p>
+          <div class="reviewer-info" style="display: flex; align-items: center; gap: 12px; margin-top: 15px;">
+            <div style="width: 42px; height: 42px; border-radius: 50%; background: #E9ECEF; display: flex; align-items: center; justify-content: center; font-weight: bold; color: #495057;">DM</div>
+            <div>
+              <div class="reviewer-name">David Miller</div>
+              <div class="reviewer-source">🇬🇧 London, UK • TripAdvisor Review</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="review-card">
+          <div class="review-stars">★★★★★</div>
+          <p class="review-text">"Comfortable private rooms, soothing music and warm welcome. A must visit when traveling to Ho Chi Minh City! Will definitely come back on our next trip."</p>
+          <div class="reviewer-info" style="display: flex; align-items: center; gap: 12px; margin-top: 15px;">
+            <div style="width: 42px; height: 42px; border-radius: 50%; background: #E9ECEF; display: flex; align-items: center; justify-content: center; font-weight: bold; color: #495057;">MK</div>
+            <div>
+              <div class="reviewer-name">Min-ji Kim</div>
+              <div class="reviewer-source">🇰🇷 Seoul, South Korea • Google Review</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 7. Our Sanctuary (Continuous Smooth Infinite Marquee Loop) -->
+    <section style="padding: 40px 0 20px; background: #fff;">
+      <div class="section-title-center" style="margin-bottom: 30px;">
+        <span style="color: var(--primary-brown); font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 2px;">Không Gian Trị Liệu</span>
+        <h2 style="margin-top: 5px;">Our Sanctuary</h2>
+        <p>Chiêm ngưỡng không gian nghỉ dưỡng thanh lịch, ấm cúng và vô trùng tại trung tâm Quận 1</p>
+      </div>
+
+      <div class="marquee-wrapper">
+        <div class="marquee-track">
+          <!-- Gallery images repeated twice for a seamless loop -->
+          <div class="marquee-item"><img src="assets/images/sanctuary_1.webp" alt="Sanctuary 1" /></div>
+          <div class="marquee-item"><img src="assets/images/sanctuary_2.webp" alt="Sanctuary 2" /></div>
+          <div class="marquee-item"><img src="assets/images/sanctuary_3.webp" alt="Sanctuary 3" /></div>
+          <div class="marquee-item"><img src="assets/images/sanctuary_4.webp" alt="Sanctuary 4" /></div>
+          <div class="marquee-item"><img src="assets/images/sanctuary_5.webp" alt="Sanctuary 5" /></div>
+          <div class="marquee-item"><img src="assets/images/sanctuary_6.webp" alt="Sanctuary 6" /></div>
+          <div class="marquee-item"><img src="assets/images/sanctuary_7.webp" alt="Sanctuary 7" /></div>
+          <div class="marquee-item"><img src="assets/images/sanctuary_8.webp" alt="Sanctuary 8" /></div>
+          <div class="marquee-item"><img src="assets/images/sanctuary_9.webp" alt="Sanctuary 9" /></div>
+          <div class="marquee-item"><img src="assets/images/sanctuary_10.webp" alt="Sanctuary 10" /></div>
+          <!-- Loop duplicate -->
+          <div class="marquee-item"><img src="assets/images/sanctuary_1.webp" alt="Sanctuary 1" /></div>
+          <div class="marquee-item"><img src="assets/images/sanctuary_2.webp" alt="Sanctuary 2" /></div>
+          <div class="marquee-item"><img src="assets/images/sanctuary_3.webp" alt="Sanctuary 3" /></div>
+          <div class="marquee-item"><img src="assets/images/sanctuary_4.webp" alt="Sanctuary 4" /></div>
+          <div class="marquee-item"><img src="assets/images/sanctuary_5.webp" alt="Sanctuary 5" /></div>
+          <div class="marquee-item"><img src="assets/images/sanctuary_6.webp" alt="Sanctuary 6" /></div>
+          <div class="marquee-item"><img src="assets/images/sanctuary_7.webp" alt="Sanctuary 7" /></div>
+          <div class="marquee-item"><img src="assets/images/sanctuary_8.webp" alt="Sanctuary 8" /></div>
+          <div class="marquee-item"><img src="assets/images/sanctuary_9.webp" alt="Sanctuary 9" /></div>
+          <div class="marquee-item"><img src="assets/images/sanctuary_10.webp" alt="Sanctuary 10" /></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 8. Ready to Relax? Call To Action Banner -->
+    <section class="final-cta" style="background-image: url('assets/images/cta_bg.webp');">
+      <div class="container">
+        <h2>Ready to Relax?</h2>
+        <p>Đặt lịch trước để được chuẩn bị phòng riêng chu đáo và chuyên viên phù hợp nhất mà không phải chờ đợi sau những giờ khám phá Sài Gòn.</p>
+        <div class="cta-buttons">
+          <a href="#/booking" class="btn-primary">Đặt Lịch Ngay (Book Now)</a>
+          <a href="#/contact" class="btn-outline" style="border-color: #fff !important; color: #fff !important;">Liên Hệ Chỉ Đường</a>
+        </div>
+      </div>
+    </section>
+
+    <!-- 9. Serenity Spa wellness articles -->
+    <section class="container" style="padding-top: 80px; padding-bottom: 80px;">
+      <div class="section-title-center">
+        <span style="color: var(--primary-brown); font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 2px;">Cẩm Nang Sức Khỏe</span>
+        <h2 style="margin-top: 5px;">Blogs</h2>
+        <p>Khám phá kiến thức chăm sóc cơ thể, kinh nghiệm du lịch và những bí quyết thư giãn phục hồi</p>
+      </div>
+
+      <div class="blog-grid">
+        <div class="blog-card">
+          <div class="blog-img">
+            <img src="assets/images/blog_1.webp" alt="Massage Price Saigon vs Bangkok vs Bali" />
+          </div>
+          <div class="blog-info">
+            <span class="blog-date">Tháng 6, 2026</span>
+            <h3>Massage Price Saigon vs Bangkok vs Bali: What an Hour Costs</h3>
+            <p>So sánh chi tiết mức giá và chất lượng dịch vụ massage trị liệu tại 3 thiên đường du lịch Đông Nam Á...</p>
+            <a href="#/contact" class="read-more" style="color: var(--primary-brown); font-weight: 600; text-decoration: none;">Đọc Thêm →</a>
+          </div>
+        </div>
+
+        <div class="blog-card">
+          <div class="blog-img">
+            <img src="assets/images/blog_2.webp" alt="Massage After a Walking Tour" />
+          </div>
+          <div class="blog-info">
+            <span class="blog-date">Tháng 6, 2026</span>
+            <h3>Massage After a Walking Tour: 7 Fixes for Sore Legs</h3>
+            <p>7 phương pháp trị liệu thần tốc giúp hồi phục cơ bắp chân mỏi nhừ sau ngày dài đi bộ khám phá phố phường...</p>
+            <a href="#/contact" class="read-more" style="color: var(--primary-brown); font-weight: 600; text-decoration: none;">Đọc Thêm →</a>
+          </div>
+        </div>
+
+        <div class="blog-card">
+          <div class="blog-img">
+            <img src="assets/images/blog_3.webp" alt="Layover Massage in Ho Chi Minh City" />
+          </div>
+          <div class="blog-info">
+            <span class="blog-date">Tháng 9, 2026</span>
+            <h3>Layover Massage in Ho Chi Minh City: A Smart 6-Hour Plan</h3>
+            <p>Kế hoạch 6 tiếng nghỉ giữa các chuyến bay: Di chuyển nhanh từ sân bay Tân Sơn Nhất về Quận 1 thư giãn...</p>
+            <a href="#/contact" class="read-more" style="color: var(--primary-brown); font-weight: 600; text-decoration: none;">Đọc Thêm →</a>
+          </div>
+        </div>
+
+        <div class="blog-card">
+          <div class="blog-img">
+            <img src="assets/images/blog_4.webp" alt="Massage Package in District 1" />
+          </div>
+          <div class="blog-info">
+            <span class="blog-date">Tháng 6, 2026</span>
+            <h3>Massage Package in District 1: Which One Fits Your Trip?</h3>
+            <p>Hướng dẫn chọn gói spa trị liệu phù hợp nhất với thời gian và lịch trình chuyến du lịch của bạn...</p>
+            <a href="#/contact" class="read-more" style="color: var(--primary-brown); font-weight: 600; text-decoration: none;">Đọc Thêm →</a>
+          </div>
+        </div>
+
+        <div class="blog-card">
+          <div class="blog-img">
+            <img src="assets/images/blog_5.webp" alt="Herbal Compress Massage in Vietnam" />
+          </div>
+          <div class="blog-info">
+            <span class="blog-date">Tháng 8, 2026</span>
+            <h3>Herbal Compress Massage in Vietnam: 7 Things to Know First</h3>
+            <p>Những điều cần biết về liệu pháp chườm túi thảo mộc Việt Nam cổ truyền giúp lưu thông khí huyết...</p>
+            <a href="#/contact" class="read-more" style="color: var(--primary-brown); font-weight: 600; text-decoration: none;">Đọc Thêm →</a>
+          </div>
+        </div>
+
+        <div class="blog-card">
+          <div class="blog-img">
+            <img src="assets/images/blog_6.webp" alt="Best Body Scrub for Your Skin" />
+          </div>
+          <div class="blog-info">
+            <span class="blog-date">Tháng 9, 2026</span>
+            <h3>Best Body Scrub for Your Skin: Rice Bran, Coffee or Salt?</h3>
+            <p>Phân tích ưu điểm của cám gạo, bã cà phê và muối hồng Himalayan đối với từng loại da...</p>
+            <a href="#/contact" class="read-more" style="color: var(--primary-brown); font-weight: 600; text-decoration: none;">Đọc Thêm →</a>
+          </div>
+        </div>
+      </div>
+    </section>
+  `;
+
+  // Khởi động Hero Slider tự động đổi ảnh nền sau mỗi 5 giây
+  initHeroSlider();
+
+  // Khởi động bộ lọc 4 danh mục dịch vụ trên trang chủ
+  initHomeServiceTabs();
+}

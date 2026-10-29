@@ -1,0 +1,49 @@
+{
+  "CheckedAt": "2026-10-22T08:46:34.9404154+07:00",
+  "HealthStatus": 200,
+  "ApiLimit": [
+    "30"
+  ],
+  "Paths": [
+    {
+      "Path": "/",
+      "Method": "HEAD",
+      "Status": 200
+    },
+    {
+      "Path": "/assets/js/demo.js",
+      "Method": "HEAD",
+      "Status": 200
+    },
+    {
+      "Path": "/assets/css/style.css",
+      "Method": "HEAD",
+      "Status": 200
+    },
+    {
+      "Path": "/tests/index.html",
+      "Method": "HEAD",
+      "Status": 200
+    },
+    {
+      "Path": "/.env",
+      "Method": "HEAD",
+      "Status": 404
+    },
+    {
+      "Path": "/package.json",
+      "Method": "HEAD",
+      "Status": 404
+    },
+    {
+      "Path": "/server/server.js",
+      "Method": "HEAD",
+      "Status": 404
+    },
+    {
+      "Path": "/assets/",
+      "Method": "HEAD",
+      "Status": 404
+    }
+  ]
+}

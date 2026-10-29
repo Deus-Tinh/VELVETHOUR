@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <title>Serenity Spa</title>
+  <defs>
+    <clipPath id="circle">
+      <circle cx="16" cy="16" r="16" />
+    </clipPath>
+  </defs>
+  <image x="-3.2" y="-5" width="38.4" height="42" clip-path="url(#circle)" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAjCAYAAAD17ghaAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAAEnQAABJ0Ad5mH3gAAANLSURBVFhH7ZXdb1N1GMc/57Sn69a13Vq6DdZuUbpBCAKTkSmIZhcbW3y50QsCjJdEL7xXgXDnDdyY+DdoJF6ZeEOIGNQYiCEzWp3IYA1zbHWOdqPry2lPB/UCVzlPe0qbCN70c/n9Pu35NL/ze6roiZtF/kdUGTxtGgINgYaAUs8eKBYfEJuZ4udvvyA2+xt6KonL66c7/BwDw2/RGeoDRZEfq0rtAsUi0V+u8PX5j8jrGdnS4vYxdvwUwfDOuiRqPoJ8LsuNycsVHw6QTS0zPfkNa2uGrKpSs0AmGSe+EJWxiaW5afTUPRlXxfIICkaOv+amSfz5BwAKcO3iZ2RTK3K0hHfDRgZHDlIw8qiqjUD3swRCYexakxwtUVEgHpvlq0/PEl+4Lau62bR5OyOH3sMb2CQrqHQEeT3D5KXz/8nDAWLRh7dmrZCXFVQSuLd0h/mbERmbcHn9DI1PMH7iDIMjB3G2euSIidkbk6wmFmUMZQLFIqmVuxi5rCl+FJfHx9jR0wyNHaFv4BX2vnaC0cMf0ORyy9ESuXSSdDIhYygTUBRUm4ZS5R737x6m85mt/951RSHYv5Pwjn1ytISi2rCpdhlDmQDg6wrh8XfJGP75IpfHj021mXJVtdPi8ZmyR2nrCNb+Eno3bGTP6CEcTc2yovjgPncXZigUzMumkMsSn6+8I5rdXobGDtPq9csKKgkoikp418uMHHkfX1evrIlGrnD96oXSW10wckS+/5K56R/lKB2hPg5MnKJny/OW67niHlgnPh/l4ifnWF58uIxKKAo9/QMEQmEWZ39nYeZXcw909m5hdOIk7R1BWZmwFMjrGS5//jG3fvpOVjWzfe84+998F01zyqpE2RGsk4zHiEXLf1k93LkVIbW8JGMTlgLZ1RUKeV3GdZHX0+TSqzI2YSmgNTWj2jUZ14XNpmF3OGRswlKgraMbX1dIxiUURaW1PSBjE4HgZjy+yjtlHUsBl7udfa+/TVugW1YAhAf288Y7H9KzdbesAAgE+3jx1WM4XdX/JyxvwTqZZIKpqxeYn4mwZhg4W9yEd71E/+AwmubE0NNcv3aJ21M/YOR0HA4nvdv2sO2FA499OLUIPGksj+Bp0RBoCPwNhg0Vx+UYcbcAAAAASUVORK5CYII=" />
+</svg>

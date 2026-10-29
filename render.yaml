@@ -1,0 +1,41 @@
+# BLOCKED: server/server.js intentionally refuses production startup until the
+# SQLite-to-PostgreSQL adapter and tested data migration are complete.
+services:
+  - type: web
+    name: serenity-api
+    runtime: node
+    plan: free
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: 24.22.1
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: SERENITY_PROXY_TOKEN
+        sync: false
+      - key: SERENITY_INITIAL_ADMIN_EMAIL
+        sync: false
+      - key: SERENITY_INITIAL_ADMIN_PASSWORD
+        sync: false
+      - key: SERENITY_INITIAL_ADMIN_NAME
+        sync: false
+      - key: SEPAY_ENABLED
+        value: "false"
+      - key: SEPAY_BANK_NAME
+        sync: false
+      - key: SEPAY_ACCOUNT_NUMBER
+        sync: false
+      - key: SEPAY_ACCOUNT_HOLDER
+        sync: false
+      - key: SEPAY_WEBHOOK_API_KEY
+        sync: false
+      - key: AI_PROVIDER
+        value: gemini
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: AI_MODEL
+        sync: false

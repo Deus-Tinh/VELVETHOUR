@@ -1,0 +1,533 @@
+.serenity-chat-widget {
+  position: fixed;
+  z-index: 1300;
+  right: 22px;
+  bottom: 94px;
+  width: min(475px, calc(100vw - 28px));
+  pointer-events: none;
+}
+
+.serenity-chat-panel {
+  display: flex;
+  width: 100%;
+  height: min(760px, calc(100dvh - 122px));
+  min-height: 380px;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid rgba(41, 34, 25, .12);
+  border-radius: 18px;
+  background: #fff;
+  box-shadow: 0 18px 56px rgba(41, 34, 25, .2), 0 2px 8px rgba(41, 34, 25, .08);
+  color: #1f1f1f;
+  font: 400 15px/1.55 var(--font-body, Roboto, Arial, sans-serif);
+  pointer-events: auto;
+  transform-origin: bottom right;
+  animation: serenity-chat-enter .18s ease-out both;
+}
+
+.serenity-chat-panel[hidden] {
+  display: none !important;
+}
+
+.serenity-chat-panel.is-minimized {
+  height: auto;
+  min-height: 0;
+}
+
+.serenity-chat-panel.is-minimized .serenity-chat-messages,
+.serenity-chat-panel.is-minimized .serenity-chat-typing,
+.serenity-chat-panel.is-minimized .serenity-chat-footer {
+  display: none;
+}
+
+.serenity-chat-header {
+  display: flex;
+  min-height: 78px;
+  align-items: center;
+  gap: 13px;
+  padding: 13px 16px;
+  background: var(--primary-brown, #a67020);
+  color: #fff;
+}
+
+.serenity-chat-avatar {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
+  place-items: center;
+  border-radius: 50%;
+  background: #f7edda;
+  color: #895b20;
+  font-size: 22px;
+}
+
+.serenity-chat-identity {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.serenity-chat-identity strong {
+  overflow: hidden;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.serenity-chat-subline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: rgba(255, 255, 255, .92);
+  font-size: 12px;
+}
+
+.serenity-chat-live-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #75e7a2;
+  box-shadow: 0 0 0 3px rgba(117, 231, 162, .17);
+}
+
+.serenity-chat-header-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.serenity-chat-header-button {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-size: 22px;
+  line-height: 1;
+}
+
+.serenity-chat-header-button:hover {
+  background: rgba(255, 255, 255, .16);
+}
+
+.serenity-chat-messages {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 17px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 23px 19px 17px;
+  scrollbar-color: #d2c3af transparent;
+  scrollbar-width: thin;
+}
+
+.serenity-chat-message {
+  display: flex;
+  width: 100%;
+}
+
+.serenity-chat-message-assistant {
+  justify-content: flex-start;
+}
+
+.serenity-chat-message-user {
+  justify-content: flex-end;
+}
+
+.serenity-chat-bubble {
+  max-width: 100%;
+  color: #202020;
+}
+
+.serenity-chat-message-user .serenity-chat-bubble {
+  max-width: 88%;
+  border-radius: 10px 10px 3px 10px;
+  padding: 13px 15px;
+  background: var(--primary-brown, #a67020);
+  color: #fff;
+}
+
+.serenity-chat-message-text {
+  margin: 0;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+.serenity-chat-message-user .serenity-chat-message-text {
+  color: #fff !important;
+}
+
+.serenity-chat-quick-replies {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 14px;
+}
+
+.serenity-chat-quick-reply {
+  min-height: 34px;
+  border: 1px solid #dedbd7;
+  border-radius: 999px;
+  background: #fff;
+  color: #5f5c59;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.2;
+  padding: 7px 14px;
+  transition: border-color .15s ease, background-color .15s ease, color .15s ease;
+}
+
+.serenity-chat-quick-reply:hover {
+  border-color: var(--primary-brown, #a67020);
+  color: var(--primary-brown-dark, #875815);
+}
+
+.serenity-chat-service-list,
+.serenity-chat-booking-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 13px;
+}
+
+.serenity-chat-service-card {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: 12px;
+  overflow: hidden;
+  border: 1px solid #ece7df;
+  border-radius: 12px;
+  background: #fffdfa;
+}
+
+.serenity-chat-service-image {
+  width: 88px;
+  height: 100%;
+  min-height: 108px;
+  object-fit: cover;
+  background: #f2ece2;
+}
+
+.serenity-chat-service-details {
+  min-width: 0;
+  padding: 10px 11px 10px 0;
+}
+
+.serenity-chat-service-category {
+  margin: 0 0 2px;
+  color: #8b6a43;
+  font-size: 10px;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+}
+
+.serenity-chat-service-details h4 {
+  margin: 0 0 4px;
+  color: #2a251f;
+  font-family: var(--font-heading, Georgia, serif);
+  font-size: 15px;
+  line-height: 1.35;
+}
+
+.serenity-chat-service-meta {
+  margin: 0 0 5px;
+  color: var(--primary-brown-dark, #875815);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.serenity-chat-service-desc {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  color: #68625a;
+  font-size: 12px;
+  line-height: 1.4;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.serenity-chat-service-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px 12px;
+  margin-top: 8px;
+}
+
+.serenity-chat-card-link,
+.serenity-chat-card-select,
+.serenity-chat-card-primary {
+  border: 0;
+  background: transparent;
+  color: #765322;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.serenity-chat-card-select {
+  min-height: 28px;
+  border: 1px solid #d7c5a7;
+  border-radius: 999px;
+  padding: 3px 10px;
+}
+
+.serenity-chat-card-select:hover:not(:disabled) {
+  border-color: var(--primary-brown, #a67020);
+  background: #f8f1e6;
+}
+
+.serenity-chat-card-select:disabled {
+  border-color: #d8e5d7;
+  background: #edf5eb;
+  color: #52724f;
+  cursor: default;
+}
+
+.serenity-chat-card-primary {
+  border-radius: 999px;
+  padding: 4px 10px;
+  background: #211f1c;
+  color: #fff;
+}
+
+.serenity-chat-card-link:hover,
+.serenity-chat-card-primary:hover {
+  text-decoration: underline;
+}
+
+.serenity-chat-booking-card {
+  display: grid;
+  gap: 2px;
+  border: 1px solid #ebe5dc;
+  border-radius: 10px;
+  padding: 11px 12px;
+  background: #fffdfa;
+  font-size: 13px;
+}
+
+.serenity-chat-booking-card strong {
+  color: var(--primary-brown-dark, #875815);
+}
+
+.serenity-chat-booking-state {
+  color: #53765c;
+  font-weight: 600;
+}
+
+.serenity-chat-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 13px;
+}
+
+.serenity-chat-action-link {
+  display: inline-flex;
+  min-height: 38px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 8px 15px;
+  background: #191816;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.serenity-chat-action-link:hover {
+  background: var(--primary-brown-dark, #875815);
+}
+
+.serenity-chat-typing {
+  flex: 0 0 auto;
+  padding: 0 19px 8px;
+  color: #7e786f;
+  font-size: 12px;
+}
+
+.serenity-chat-typing:not([hidden])::after {
+  display: inline-block;
+  width: 13px;
+  animation: serenity-chat-dots 1s steps(4, end) infinite;
+  content: '…';
+  overflow: hidden;
+  vertical-align: bottom;
+}
+
+.serenity-chat-footer {
+  flex: 0 0 auto;
+  border-top: 1px solid #f0eeea;
+  padding: 9px 12px 12px;
+  background: #fff;
+}
+
+.serenity-chat-footer-tools {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 7px;
+}
+
+.serenity-chat-footer-link {
+  border: 0;
+  background: transparent;
+  color: #786f64;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+}
+
+.serenity-chat-footer-link:hover {
+  color: var(--primary-brown-dark, #875815);
+  text-decoration: underline;
+}
+
+.serenity-chat-composer {
+  display: flex;
+  min-height: 52px;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid #e6e2dd;
+  border-radius: 999px;
+  padding: 4px 5px 4px 15px;
+  background: #fff;
+}
+
+.serenity-chat-input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #252321;
+  font: inherit;
+  font-size: 14px;
+}
+
+.serenity-chat-input::placeholder {
+  color: #a39c93;
+}
+
+.serenity-chat-send {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: var(--primary-brown, #a67020);
+  color: #fff;
+  cursor: pointer;
+  font-size: 19px;
+  transform: rotate(-24deg);
+}
+
+.serenity-chat-send:disabled,
+.serenity-chat-quick-reply:disabled,
+.serenity-chat-card-link:disabled {
+  cursor: wait;
+  opacity: .55;
+}
+
+.serenity-chat-card-select:disabled:not([data-already-selected="true"]) {
+  cursor: wait;
+  opacity: .55;
+}
+
+.serenity-chat-panel button:focus-visible,
+.serenity-chat-panel a:focus-visible,
+.serenity-chat-input:focus-visible {
+  outline: 3px solid #246fd3;
+  outline-offset: 3px;
+}
+
+.serenity-chat-panel.is-busy .serenity-chat-send {
+  animation: serenity-chat-pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes serenity-chat-enter {
+  from { opacity: 0; transform: translateY(9px) scale(.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes serenity-chat-dots {
+  0% { width: 0; }
+  100% { width: 13px; }
+}
+
+@keyframes serenity-chat-pulse {
+  50% { opacity: .65; }
+}
+
+@media (max-width: 600px) {
+  .serenity-chat-widget {
+    inset: 0;
+    width: 100%;
+    height: 100vh;
+    height: 100dvh;
+  }
+
+  .serenity-chat-panel {
+    width: 100%;
+    height: 100vh;
+    height: 100dvh;
+    min-height: 0;
+    border: 0;
+    border-radius: 0;
+    animation: none;
+  }
+
+  .serenity-chat-header {
+    min-height: 82px;
+    padding-top: max(13px, env(safe-area-inset-top));
+  }
+
+  .serenity-chat-messages {
+    padding: 23px 18px 17px;
+  }
+
+  .serenity-chat-footer {
+    padding-bottom: max(12px, env(safe-area-inset-bottom));
+  }
+}
+
+@media (max-width: 360px) {
+  .serenity-chat-service-card {
+    grid-template-columns: 70px minmax(0, 1fr);
+  }
+
+  .serenity-chat-service-image {
+    width: 70px;
+  }
+
+  .serenity-chat-service-actions {
+    gap: 4px 8px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .serenity-chat-panel,
+  .serenity-chat-quick-reply,
+  .serenity-chat-panel.is-busy .serenity-chat-send {
+    animation: none !important;
+    scroll-behavior: auto !important;
+    transition: none !important;
+  }
+}

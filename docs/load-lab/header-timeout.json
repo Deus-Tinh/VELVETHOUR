@@ -1,0 +1,29 @@
+{
+  "target": "127.0.0.1:3001",
+  "checkedAt": "2026-10-22T01:45:13.443Z",
+  "maxSockets": 4,
+  "hardDeadlineMs": 15000,
+  "results": [
+    {
+      "socket": 1,
+      "status": 408,
+      "closedAfterMs": 10392
+    },
+    {
+      "socket": 2,
+      "status": 408,
+      "closedAfterMs": 10393
+    },
+    {
+      "socket": 3,
+      "status": 408,
+      "closedAfterMs": 10393
+    },
+    {
+      "socket": 4,
+      "status": 408,
+      "closedAfterMs": 10393
+    }
+  ],
+  "healthAfter": 200
+}

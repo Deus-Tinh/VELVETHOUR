@@ -1,0 +1,22 @@
+[
+  {
+    "Path": "server/server.js",
+    "SHA256": "43a0d7e68329419993b3489f1b45447af509276038df3ccb7f5b94fcf26853f4"
+  },
+  {
+    "Path": "server/httpProtection.js",
+    "SHA256": "b550088d7e6388150c39e0f968fda9a2cae7fdce7798b9956590204e5964f870"
+  },
+  {
+    "Path": ".scratch/load-lab/server-before.js",
+    "SHA256": "3521aa5b987f2aa9ddc406a83a8f59708fcf060f51d79210ae81f6e5da472211"
+  },
+  {
+    "Path": "tools/load-lab.ps1",
+    "SHA256": "cbcb2750f522c3d72feefa223d682df4a6bcb7bd526cbaad2543f73b202c3f99"
+  },
+  {
+    "Path": "tests/http-protection.test.js",
+    "SHA256": "a5c9843b21e9537dd60243be6c7786a26507baacbc98b453eb9be8a5e35adf28"
+  }
+]

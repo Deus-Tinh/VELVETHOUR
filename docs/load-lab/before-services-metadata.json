@@ -1,0 +1,15 @@
+{
+  "Phase": "before",
+  "Endpoint": "/api/services",
+  "Url": "http://127.0.0.1:3001/api/services",
+  "TargetPID": 20588,
+  "Node": "v24.16.0",
+  "Tool": "oha 1.16.0",
+  "ToolSHA256": "d692d392e958e7e8e1b16810287e74a835a62255b079ba2766a4b3b04499f267",
+  "LogicalCores": 16,
+  "Seconds": 30,
+  "MaxConnections": 200,
+  "MaxQps": 1000,
+  "Command": "oha --no-tui --output-format json -z 30s -w -c 200 -q 1000 -t 5s --redirect 0 http://127.0.0.1:3001/api/services",
+  "FinishedAt": "2026-10-22T08:42:50.0018981+07:00"
+}
