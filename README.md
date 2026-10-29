@@ -1,4 +1,4 @@
-# SERENITY SPA & WELLNESS — MASSAGE & TRỊ LIỆU QUẬN 1
+# SERENITY SPA & WELLNESS — MASSAGE & TRỊ LIỆU 
 > **Đồ án cuối kỳ môn Lập trình Web — Ứng dụng Đặt lịch Spa & Trị liệu Thư giãn**  
 > *Website riêng Serenity Spa & Wellness — giới thiệu dịch vụ massage và hỗ trợ đặt lịch trực tuyến.*
 
