@@ -1,0 +1,18 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "rewrites": [
+    { "source": "/dich-vu", "destination": "/index.html" },
+    { "source": "/dich-vu/:serviceId", "destination": "/index.html" },
+    { "source": "/lieu-trinh", "destination": "/index.html" },
+    { "source": "/dat-lich", "destination": "/index.html" },
+    { "source": "/ve-chung-toi", "destination": "/index.html" },
+    { "source": "/lien-he", "destination": "/index.html" },
+    { "source": "/lich-cua-toi", "destination": "/index.html" },
+    { "source": "/admin", "destination": "/index.html" },
+    { "source": "/nhan-vien", "destination": "/index.html" },
+    { "source": "/dang-nhap", "destination": "/index.html" },
+    { "source": "/dang-ky", "destination": "/index.html" },
+    { "source": "/moi-nhan-vien", "destination": "/index.html" },
+    { "source": "/uu-dai/:slug", "destination": "/index.html" }
+  ]
+}

@@ -1,5 +1,5 @@
 /**
- * Trang Đặt Lịch Chuyên Nghiệp (#/booking).
+ * Trang Đặt Lịch Chuyên Nghiệp (/dat-lich).
  * Booking flow:
  * - Bước 1: Chọn liệu trình và thời lượng.
  * - Bước 2: Chọn chuyên viên, ngày và giờ trên cùng một lịch.
@@ -122,7 +122,7 @@ export function renderBookingPage(preSelectedServiceId = null, preDuration = nul
 
   root.innerHTML = `
     <div class="page-banner" style="padding: 35px 20px;">
-      <div class="breadcrumbs"><a href="#/" style="color:inherit;text-decoration:none;">Trang Chủ</a> / Đặt Lịch Hẹn</div>
+      <div class="breadcrumbs"><a href="/" style="color:inherit;text-decoration:none;">Trang Chủ</a> / Đặt Lịch Hẹn</div>
       <h1 style="font-size: 2.2rem;">ĐẶT LỊCH TRỊ LIỆU ONLINE</h1>
       <p>Chọn liệu trình, chuyên viên và khung giờ riêng tư để tận hưởng phút giây thư giãn tuyệt đối.</p>
     </div>
@@ -158,7 +158,7 @@ function renderBookingAccessGate(root, currentUser, preSelectedServiceId, preDur
   const isStaff = currentUser?.role === 'staff';
   root.innerHTML = `
     <div class="page-banner" style="padding:35px 20px;">
-      <div class="breadcrumbs"><a href="#/" style="color:inherit;text-decoration:none;">Trang Chủ</a> / Đặt Lịch Hẹn</div>
+      <div class="breadcrumbs"><a href="/" style="color:inherit;text-decoration:none;">Trang Chủ</a> / Đặt Lịch Hẹn</div>
       <h1 style="font-size:2.2rem;">ĐẶT LỊCH TRỊ LIỆU ONLINE</h1>
     </div>
     <section class="booking-access-section">
@@ -1120,10 +1120,10 @@ function renderStep4(container) {
     } catch (err) {
       if (err.code === 'PRICE_CHANGED') {
         await apiClient.refresh();
-        if (wizard === submittedDraft && window.location.hash.startsWith('#/booking')) renderStep4(container);
+        if (wizard === submittedDraft && window.location.pathname === '/dat-lich') renderStep4(container);
       } else if (err.code === 'UNAUTHORIZED') {
         await authService.logout();
-        if (window.location.hash.startsWith('#/booking')) renderBookingPage();
+        if (window.location.pathname === '/dat-lich') renderBookingPage();
       } else if (wizard === submittedDraft && Object.keys(err.fields || {}).length) {
         serverFieldErrors = err.fields;
       }

@@ -1,5 +1,5 @@
 /**
- * Bảng Điều Khiển Quản Trị Hệ Thống (#/admin).
+ * Bảng Điều Khiển Quản Trị Hệ Thống (/admin).
  * Tính năng:
  * - KPIs thời gian thực tính toán hoàn toàn từ Repositories (Array methods).
  * - Biểu đồ Doanh thu & Lượt khách 7 ngày bằng HTML5 Canvas API thuần.
@@ -47,7 +47,7 @@ export function renderAdminDashboardPage() {
         <div style="font-size: 48px; margin-bottom: 15px;">🛡</div>
         <h2>Bảng Quản Trị Hệ Thống (Admin Portal)</h2>
         <p style="color: var(--text-light); margin: 15px 0 25px 0;">Vui lòng đăng nhập với tài khoản Quản Trị Viên (Admin) để truy cập.</p>
-        <a href="#/login" class="btn-primary" style="display: inline-block; text-decoration: none;">Đăng Nhập Quản Trị</a>
+        <a href="/dang-nhap" class="btn-primary" style="display: inline-block; text-decoration: none;">Đăng Nhập Quản Trị</a>
       </div>
     `;
     return;
@@ -57,7 +57,7 @@ export function renderAdminDashboardPage() {
 
   root.innerHTML = `
     <div class="page-banner" style="padding: 35px 20px;">
-      <div class="breadcrumbs"><a href="#/" style="color:inherit;text-decoration:none;">Trang Chủ</a> / Admin Portal</div>
+      <div class="breadcrumbs"><a href="/" style="color:inherit;text-decoration:none;">Trang Chủ</a> / Admin Portal</div>
       <h1 style="font-size: 2.2rem;">HỆ THỐNG QUẢN TRỊ SPA &amp; THỐNG KÊ</h1>
       <p>Xin chào, <strong>${esc(currentUser.name)}</strong> • Quản lý dịch vụ, chuyên viên và điều phối lịch hẹn.</p>
     </div>

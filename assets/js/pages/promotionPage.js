@@ -17,7 +17,7 @@ export async function renderPromotionPage(slug) {
   root.innerHTML = '<section class="promotion-page-loading" role="status">Đang tải ưu đãi…</section>';
   try {
     const { page } = await apiClient.getSitePage(slug);
-    if (sequence !== renderSequence || !root.isConnected || window.location.hash.split('?')[0] !== `#/pages/${slug}`) return;
+    if (sequence !== renderSequence || !root.isConnected || window.location.pathname !== `/uu-dai/${slug}`) return;
     if (page.templateId !== 'holiday-offer-v1') throw new Error('Mẫu trang ưu đãi không được hỗ trợ.');
     const campaign = page.campaign;
     const content = page.content || {};
@@ -34,7 +34,7 @@ export async function renderPromotionPage(slug) {
       </section>` : '';
     root.innerHTML = `
       <main class="promotion-page">
-        <a class="promotion-back-link" href="#/packages">← Xem tất cả dịch vụ</a>
+        <a class="promotion-back-link" href="/dich-vu">← Xem tất cả dịch vụ</a>
         <header class="promotion-hero">
           ${content.eyebrow ? `<p class="promotion-eyebrow">${esc(content.eyebrow)}</p>` : ''}
           <h1>${esc(page.title)}</h1>
@@ -46,11 +46,11 @@ export async function renderPromotionPage(slug) {
           ${Array.isArray(content.highlights) && content.highlights.length ? `<ul>${content.highlights.map((item) => `<li>${esc(item)}</li>`).join('')}</ul>` : ''}
           ${content.conditions ? `<aside class="promotion-conditions"><h2>Điều kiện áp dụng</h2><p>${esc(content.conditions).replace(/\r?\n/g, '<br>')}</p></aside>` : ''}
         </section>
-        <a class="btn-primary promotion-booking-cta" href="#/packages?date=${encodeURIComponent(bookingDate)}">${esc(content.ctaLabel || 'Đặt lịch ưu đãi')}</a>
+        <a class="btn-primary promotion-booking-cta" href="/dich-vu?date=${encodeURIComponent(bookingDate)}">${esc(content.ctaLabel || 'Đặt lịch ưu đãi')}</a>
       </main>
     `;
   } catch (error) {
-    if (sequence !== renderSequence || !root.isConnected || window.location.hash.split('?')[0] !== `#/pages/${slug}`) return;
-    root.innerHTML = `<main class="promotion-page promotion-page-error"><h1>Không tải được trang ưu đãi</h1><p>${esc(error.message || 'Trang này không còn được xuất bản.')}</p><a class="btn-outline" href="#/packages">Quay lại dịch vụ</a></main>`;
+    if (sequence !== renderSequence || !root.isConnected || window.location.pathname !== `/uu-dai/${slug}`) return;
+    root.innerHTML = `<main class="promotion-page promotion-page-error"><h1>Không tải được trang ưu đãi</h1><p>${esc(error.message || 'Trang này không còn được xuất bản.')}</p><a class="btn-outline" href="/dich-vu">Quay lại dịch vụ</a></main>`;
   }
 }

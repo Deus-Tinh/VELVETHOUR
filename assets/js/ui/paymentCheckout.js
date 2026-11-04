@@ -36,7 +36,7 @@ function renderResult(container, booking, paymentStatus, issue = null) {
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
           ${paid && !booking.reschedulePayment ? `<button type="button" class="btn-primary" data-download-invoice="${esc(booking.id)}">Tải hóa đơn PDF</button>` : ''}
-          <a class="btn-outline" href="#/my-bookings" style="text-decoration:none;">Mở lịch của tôi</a>
+          <a class="btn-outline" href="/lich-cua-toi" style="text-decoration:none;">Mở lịch của tôi</a>
         </div>
       </div>
       ${issue?.noRefund ? '<p style="margin:16px 0 0;padding:12px;background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;color:#9a3412;font-size:13px;">Nếu chuyển thiếu hoặc sai mã, chúng tôi sẽ không hoàn tiền lại. Giao dịch đang được ghi nhận để nhân viên đối soát.</p>' : ''}

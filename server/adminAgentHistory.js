@@ -48,7 +48,7 @@ function effectSummaries(payload) {
     effects.push(`Sale đã xác minh: ${sale.name} · ${sale.serviceDateFrom} đến ${sale.serviceDateTo} · ${sale.enabled ? 'Bật' : 'Tắt'} · phiên bản ${sale.revision}.`);
   }
   for (const change of payload.siteChanges || []) {
-    if (change.page) effects.push(`Trang đã xác minh: ${change.page.title} · #/pages/${change.page.slug} · phiên bản ${change.page.revision}.`);
+    if (change.page) effects.push(`Trang đã xác minh: ${change.page.title} · /uu-dai/${change.page.slug} · phiên bản ${change.page.revision}.`);
     if (change.menuItem) effects.push(`Menu đã xác minh: ${change.menuItem.label} → ${change.menuItem.targetHref} · ${change.menuItem.enabled ? 'Hiện' : 'Ẩn'}.`);
   }
   for (const quote of payload.quotes || []) effects.push(`Báo giá dời lịch ${quote.bookingCode || ''}: ${formatVND(quote.settlement.oldFinalPrice)} → ${formatVND(quote.settlement.newFinalPrice)}, ngày mới ${quote.change.date}. Đây là báo giá trong lịch sử; cần lấy báo giá mới để xác nhận.`);

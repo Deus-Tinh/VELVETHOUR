@@ -2068,8 +2068,8 @@ async function routeApi(request, response, url) {
       withAudit(actor, 'staff.invite.created', null, { staffId: staff.id, email, expiresAt });
     });
     const baseOrigin = request.headers.origin ? new URL(request.headers.origin).origin : `http://${request.headers.host || 'localhost:3001'}`;
-    const invitationUrl = new URL('/', baseOrigin);
-    invitationUrl.hash = `/staff-invite?token=${encodeURIComponent(token)}`;
+    const invitationUrl = new URL('/moi-nhan-vien', baseOrigin);
+    invitationUrl.hash = `token=${encodeURIComponent(token)}`;
     return respond(response, 201, { invitation: { staffId: staff.id, name: staff.name, email, createdAt, expiresAt }, invitationUrl: invitationUrl.href });
   }
 
@@ -2543,7 +2543,7 @@ export function startServer() {
   const aiConfigured = isAiConfigured(process.env);
   const provider = String(process.env.AI_PROVIDER || '').toLowerCase();
   console.log(`[AI] ${provider === 'gemini' ? 'Gemini' : 'AI'} configured: ${aiConfigured ? 'YES' : 'NO'}${aiConfigured ? ` · model: ${process.env.AI_MODEL}` : ''}`);
-  server.listen(PORT, HOST, () => console.log(`Serenity shared app/API đang chạy tại http://localhost:${PORT}/#/ (host ${HOST})`));
+  server.listen(PORT, HOST, () => console.log(`Serenity shared app/API đang chạy tại http://localhost:${PORT}/ (host ${HOST})`));
   backupIfDue().catch((error) => console.error('[backup]', error));
   const timer = setInterval(() => {
     try { agentHistory.prune(); } catch (error) { console.error('[agent-history-cleanup]', error); }

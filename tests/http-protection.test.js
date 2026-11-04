@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { Readable } from 'node:stream';
+import { Readable, Writable } from 'node:stream';
+import { finished } from 'node:stream/promises';
 import { apiRateLimitFromEnv, clientAddressForRequest, createApiRateLimiter, HTTP_SERVER_OPTIONS, resolvePublicAsset } from '../server/httpProtection.js';
 
 test('rolling budget rejects request 31, recovers after expiry, and cannot burst across a fixed boundary', () => {
@@ -61,6 +62,20 @@ test('static allowlist denies secrets, internal sources, encoded dotfiles and Wi
   assert.equal(resolvePublicAsset('/', root), path.join(root, 'index.html'));
   assert.equal(resolvePublicAsset('/assets/js/app.js', root), path.join(root, 'assets', 'js', 'app.js'));
   assert.equal(resolvePublicAsset('/tests/index.html', root), path.join(root, 'tests', 'index.html'));
+  for (const pathname of ['/dich-vu', '/lieu-trinh', '/dich-vu/stone-massage', '/dat-lich?date=2026-11-04', '/uu-dai/uu-dai-le']) {
+    assert.equal(resolvePublicAsset(pathname.split('?')[0], root), path.join(root, 'index.html'), pathname);
+  }
+  for (const pathname of ['/api/health', '/unknown', '/.env']) assert.equal(resolvePublicAsset(pathname, root), null, pathname);
+});
+
+test('Vercel rewrites app paths to index without rewriting API requests', async () => {
+  const config = JSON.parse(await readFile(new URL('../vercel.json', import.meta.url), 'utf8'));
+  const sources = config.rewrites.map((rewrite) => rewrite.source);
+  for (const route of ['/dich-vu', '/lieu-trinh', '/dat-lich', '/ve-chung-toi', '/lien-he', '/lich-cua-toi',
+    '/admin', '/nhan-vien', '/dang-nhap', '/dang-ky', '/moi-nhan-vien', '/dich-vu/:serviceId', '/uu-dai/:slug']) {
+    assert.ok(sources.includes(route), `Missing Vercel SPA rewrite for ${route}`);
+  }
+  assert.ok(sources.every((source) => !source.startsWith('/api')), 'API proxy paths must remain untouched');
 });
 
 const directory = await mkdtemp(path.join(tmpdir(), 'serenity-http-protection-'));
@@ -71,17 +86,23 @@ const handler = server.listeners('request')[0];
 async function request(url, { address = '192.0.2.1', headers = {}, method = 'GET' } = {}) {
   const incoming = Readable.from([]);
   Object.assign(incoming, { method, url, headers: { host: 'localhost:3001', ...headers }, socket: { remoteAddress: address } });
-  const outgoing = {
+  const outgoing = new Writable({ write(chunk, _encoding, callback) { this.body += chunk.toString(); callback(); } });
+  Object.assign(outgoing, {
     headers: {}, status: 0, body: '',
     setHeader(name, value) { this.headers[name.toLowerCase()] = value; },
-    writeHead(status, headers = {}) { this.status = status; for (const [name, value] of Object.entries(headers)) this.setHeader(name, value); return this; },
-    end(body = '') { this.body = body; return this; },
-  };
+    writeHead(status, responseHeaders = {}) { this.status = status; for (const [name, value] of Object.entries(responseHeaders)) this.setHeader(name, value); return this; },
+  });
   await handler(incoming, outgoing);
+  await finished(outgoing);
   return outgoing;
 }
 
 test('HTTP integration blocks before routing, shares the API budget, and ignores forged forwarded IPs', async () => {
+  const directPage = await request('/dich-vu?date=2026-11-04');
+  assert.equal(directPage.status, 200);
+  assert.match(directPage.headers['content-type'], /text\/html/);
+  assert.match(directPage.body, /<title>/);
+  assert.equal((await request('/unknown-page')).status, 404);
   assert.equal((await request('/api/health')).status, 200);
   assert.equal((await request('/api/services')).status, 200);
   assert.equal((await request('/api/auth/session')).status, 200);

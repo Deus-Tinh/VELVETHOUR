@@ -1,17 +1,6 @@
 /**
  * SERENITY SPA & WELLNESS — MULTI-PAGE SPA ROUTER & LOGIC (VANILLA JS ES6+)
- * Hệ thống điều hướng Hash Routing:
- * - #/              : Trang Chủ (Home)
- * - #/services      : Danh Mục Liệu Trình (Services Catalog có Search/Filter/Sort/Pagination)
- * - #/packages      : Cửa hàng dịch vụ gồm liệu trình và gói trị liệu
- * - #/services/:id  : Chi Tiết Liệu Trình Độc Lập (Service Detail + Variant Picker)
- * - #/booking       : Trang Đặt Lịch Chuyên Sâu (Booking Wizard 4 bước + Conflict Check)
- * - #/about         : Giới Thiệu & Triết Lý (About Us)
- * - #/contact       : Liên Hệ & Bản Đồ (Contact Us + LocalStorage persistence)
- * - #/my-bookings   : Lịch Hẹn Của Tôi (Customer Portal + Reviews & Favorites)
- * - #/staff         : Bảng Làm Việc Chuyên Viên (Staff Portal)
- * - #/admin         : Bảng Quản Trị & Thống Kê (Admin Portal CRUD + Canvas Chart)
- * - #/login, #/register : Đăng Nhập & Đăng Ký (Demo 1-Click Accounts)
+ * Điều hướng dùng History API với URL công khai dạng đường dẫn; hash cũ được chuyển tiếp.
  */
 
 import { IMAGE_MANIFEST, getImageById, getServiceImage } from './imageManifest.js';
@@ -24,6 +13,10 @@ import { showToast, openServiceModal } from './ui/components.js';
 import { initChatbot } from './ui/chatbotLauncher.js';
 import { getDisplayPricing, salePriceMarkup } from './ui/salePrice.js';
 import { esc } from './core/utils.js';
+import {
+  cleanSpaHref, installSpaNavigation, isSpaPath, migrateLegacyHash, navigateTo,
+  normalizeSpaPath, STAFF_INVITE_TOKEN_KEY, titleForSpaPath,
+} from './core/spaRouter.js';
 
 import { renderServicesPage } from './pages/servicesPage.js';
 import { renderServiceDetailPage } from './pages/serviceDetailPage.js';
@@ -439,6 +432,13 @@ export function formatVND(amount) {
 
 // KHỞI ĐỘNG HỆ THỐNG ĐIỀU HƯỚNG
 document.addEventListener('DOMContentLoaded', () => {
+  migrateLegacyHash();
+  let routerReady = false;
+  installSpaNavigation(() => {
+    if (!routerReady) return;
+    migrateLegacyHash();
+    handleRoute();
+  });
   const appRoot = document.getElementById('appRoot');
   if (appRoot) appRoot.innerHTML = '<div class="section-container" style="padding:100px 20px;text-align:center;">Đang kết nối dữ liệu Serenity…</div>';
   apiClient.initialize().then((sharedBackend) => {
@@ -452,13 +452,14 @@ document.addEventListener('DOMContentLoaded', () => {
       document.getElementById('retryServerBtn')?.addEventListener('click', () => window.location.reload());
       return;
     }
+    routerReady = true;
     initNavbar();
     initModalListeners();
-    on('auth:login', () => updateActiveNav(window.location.hash || '#/'));
-    on('auth:logout', () => updateActiveNav(window.location.hash || '#/'));
+    on('auth:login', () => updateActiveNav());
+    on('auth:logout', () => updateActiveNav());
     on('data:changed', ({ source }) => {
       if (source !== 'remote') return;
-      updateActiveNav(window.location.hash || '#/');
+      updateActiveNav();
       if (document.querySelector('.spa-agent-panel') || document.querySelector('#serviceModal.show')) return;
       const active = document.activeElement;
       if (active?.matches?.('input, textarea, select')) return;
@@ -466,7 +467,6 @@ document.addEventListener('DOMContentLoaded', () => {
       handleRoute();
       requestAnimationFrame(() => window.scrollTo({ top: scrollY, behavior: 'auto' }));
     });
-    window.addEventListener('hashchange', handleRoute);
     initChatbot();
     handleRoute();
   });
@@ -490,84 +490,79 @@ function initModalListeners() {
 }
 
 /* ==========================================================================
-   ROUTER XỬ LÝ ĐIỀU HƯỚNG THEO URL HASH
+   ROUTER XỬ LÝ ĐIỀU HƯỚNG THEO URL PATH
    ========================================================================== */
 function handleRoute() {
-  const hash = window.location.hash || '#/';
-  const route = hash.split('?')[0];
+  const url = new URL(window.location.href);
+  const pathname = normalizeSpaPath(url.pathname);
   const appRoot = document.getElementById('appRoot');
   if (!appRoot) return;
 
-  // Cập nhật trạng thái active và danh sách liên kết trên navbar theo vai trò
-  updateActiveNav(hash);
-
-  // Cuộn lên đầu trang khi chuyển view
+  updateActiveNav(pathname);
+  document.title = titleForSpaPath(pathname);
   window.scrollTo({ top: 0, behavior: 'smooth' });
 
-  // Route: Kích hoạt tài khoản nhân viên từ lời mời admin.
-  if (hash.startsWith('#/staff-invite')) {
-    const urlParams = new URLSearchParams(hash.split('?')[1] || '');
-    renderStaffInvitePage(urlParams.get('token') || '');
+  if (!isSpaPath(pathname)) {
+    renderHomePage();
     return;
   }
 
-  // Route: Chi tiết dịch vụ #/services/:id
-  if (hash.startsWith('#/services/')) {
-    const serviceId = hash.replace('#/services/', '').trim();
-    renderServiceDetailPage(serviceId);
+  if (pathname === '/moi-nhan-vien') {
+    let inviteToken = '';
+    try { inviteToken = window.sessionStorage.getItem(STAFF_INVITE_TOKEN_KEY) || ''; } catch { /* storage may be unavailable */ }
+    renderStaffInvitePage(inviteToken);
     return;
   }
 
-  const promotionPageRoute = route.match(/^#\/pages\/([a-z0-9-]+)$/i);
+  const serviceDetailRoute = pathname.match(/^\/dich-vu\/([^/]+)$/);
+  if (serviceDetailRoute) {
+    renderServiceDetailPage(serviceDetailRoute[1]);
+    return;
+  }
+
+  const promotionPageRoute = pathname.match(/^\/uu-dai\/([a-z0-9-]+)$/i);
   if (promotionPageRoute) {
     renderPromotionPage(promotionPageRoute[1]);
     return;
   }
 
-  // Route: Đặt lịch có chọn trước dịch vụ #/booking?service=:id&duration=:dur
-  if (hash.startsWith('#/booking')) {
-    const urlParams = new URLSearchParams(hash.split('?')[1] || '');
-    const preServiceId = urlParams.get('service');
-    const preDuration = urlParams.get('duration');
-    renderBookingPage(preServiceId, preDuration, {
-      date: urlParams.get('date'), time: urlParams.get('time'), staffId: urlParams.get('staff'),
+  if (pathname === '/dat-lich') {
+    const params = url.searchParams;
+    renderBookingPage(params.get('service'), params.get('duration'), {
+      date: params.get('date'), time: params.get('time'), staffId: params.get('staff'),
     });
     return;
   }
 
-  if (hash === '#/login' || hash.startsWith('#/login?') || hash === '#/register' || hash.startsWith('#/register?')) {
-    const isRegister = hash.startsWith('#/register');
-    const urlParams = new URLSearchParams(hash.split('?')[1] || '');
-    const returnTo = urlParams.get('returnTo') === 'booking' ? 'booking' : null;
-    renderAuthPage(isRegister ? 'register' : 'login', returnTo);
+  if (pathname === '/dang-nhap' || pathname === '/dang-ky') {
+    const returnTo = url.searchParams.get('returnTo') === 'booking' ? 'booking' : null;
+    renderAuthPage(pathname === '/dang-ky' ? 'register' : 'login', returnTo);
     return;
   }
 
-  // Các Route độc lập
-  switch (route) {
-    case '#/':
-    case '#/home':
+  switch (pathname) {
+    case '/':
       renderHomePage();
       break;
-    case '#/services':
+    case '/lieu-trinh':
       renderServicesPage('all');
       break;
-    case '#/packages':
-      renderServicesPage('packages', new URLSearchParams(hash.split('?')[1] || '').get('date'));
+    case '/dich-vu':
+      renderServicesPage('packages', url.searchParams.get('date'));
       break;
-    case '#/about':
+    case '/ve-chung-toi':
       renderAboutPage();
       break;
-    case '#/contact':
+    case '/lien-he':
       renderContactPage();
       break;
-    case '#/my-bookings':
+    case '/lich-cua-toi':
       renderMyBookingsPage();
       break;
-    case '#/staff':
+    case '/nhan-vien':
       renderStaffDashboardPage();
       break;
-    case '#/admin':
+    case '/admin':
       renderAdminDashboardPage();
       break;
     default:
@@ -576,48 +571,57 @@ function handleRoute() {
   }
 }
 
-function updateActiveNav(hash) {
+function updateActiveNav(pathname = window.location.pathname) {
   const user = authService.getCurrentUser();
   const menubarUl = document.querySelector('.menubar ul');
-  const route = hash.split('?')[0];
+  const currentPath = normalizeSpaPath(pathname);
   const siteMenu = apiClient.getSiteContent().menuItems.filter((item) => item.targetHref);
   const routeOverrides = new Map(siteMenu.filter((item) => item.targetType === 'route').map((item) => [item.routeKey, item]));
+  const isActive = (href) => {
+    let target;
+    try { target = new URL(href, window.location.href); } catch { return false; }
+    if (target.origin !== window.location.origin) return false;
+    const targetPath = normalizeSpaPath(target.pathname);
+    if (targetPath === '/dich-vu' && (currentPath === '/lieu-trinh' || currentPath.startsWith('/dich-vu/'))) return true;
+    return currentPath === targetPath || (targetPath !== '/' && currentPath.startsWith(`${targetPath}/`));
+  };
   const link = (key, label, href) => {
     const override = routeOverrides.get(key);
     if (override && !override.enabled) return '';
-    const target = override?.targetHref || href;
-    return `<li><a href="${esc(target)}" class="${route === target.split('?')[0] ? 'active' : ''}">${esc(override?.label || label)}</a></li>`;
+    const target = cleanSpaHref(override?.targetHref || href, window.location.href);
+    return `<li><a href="${esc(target)}" class="${isActive(target) ? 'active' : ''}">${esc(override?.label || label)}</a></li>`;
   };
 
-  // Cập nhật các menu theo vai trò người dùng
   if (menubarUl) {
     let extraNavs = '';
     if (user?.role === 'staff') {
-      extraNavs = `<li><a href="#/staff" class="${hash === '#/staff' ? 'active' : ''}">Staff Portal</a></li>`;
+      extraNavs = `<li><a href="/nhan-vien" class="${isActive('/nhan-vien') ? 'active' : ''}">Staff Portal</a></li>`;
     } else if (user?.role === 'admin') {
-      extraNavs = `<li><a href="#/admin" class="${hash === '#/admin' ? 'active' : ''}">Quản Trị</a></li>`;
+      extraNavs = `<li><a href="/admin" class="${isActive('/admin') ? 'active' : ''}">Quản Trị</a></li>`;
     }
     const defaultRouteKeys = new Set(['home', 'services', 'about', 'contact']);
     const managedNavs = siteMenu.filter((item) => item.enabled && (item.targetType === 'page'
       || (item.targetType === 'route' && !defaultRouteKeys.has(item.routeKey))))
-      .map((item) => `<li><a href="${esc(item.targetHref)}" class="${route === item.targetHref.split('?')[0] ? 'active' : ''}">${esc(item.label)}</a></li>`).join('');
+      .map((item) => {
+        const target = cleanSpaHref(item.targetHref, window.location.href);
+        return `<li><a href="${esc(target)}" class="${isActive(target) ? 'active' : ''}">${esc(item.label)}</a></li>`;
+      }).join('');
     menubarUl.innerHTML = `
-      ${link('home', 'Trang Chủ', '#/')}
-      ${link('services', 'Dịch Vụ', '#/packages')}
-      ${link('about', 'Về Chúng Tôi', '#/about')}
-      ${link('contact', 'Liên Hệ', '#/contact')}
-      <li><a href="#/my-bookings" class="${route === '#/my-bookings' ? 'active' : ''}">Lịch Của Tôi</a></li>
+      ${link('home', 'Trang Chủ', '/')}
+      ${link('services', 'Dịch Vụ', '/dich-vu')}
+      ${link('about', 'Về Chúng Tôi', '/ve-chung-toi')}
+      ${link('contact', 'Liên Hệ', '/lien-he')}
+      <li><a href="/lich-cua-toi" class="${isActive('/lich-cua-toi') ? 'active' : ''}">Lịch Của Tôi</a></li>
       ${managedNavs}
       ${extraNavs}
       ${user ? `
-        <li><a href="#/my-bookings" style="color:var(--primary-brown);font-weight:bold;">👤 ${esc(user.name.split(' ').slice(-1)[0])}</a></li>
+        <li><a href="/lich-cua-toi" style="color:var(--primary-brown);font-weight:bold;">👤 ${esc(user.name.split(' ').slice(-1)[0])}</a></li>
       ` : `
-        <li><a href="#/login" class="${hash === '#/login' ? 'active' : ''}" style="color:var(--primary-brown);font-weight:bold;">🔑 Đăng Nhập</a></li>
+        <li><a href="/dang-nhap" class="${isActive('/dang-nhap') ? 'active' : ''}" style="color:var(--primary-brown);font-weight:bold;">🔑 Đăng Nhập</a></li>
       `}
     `;
   }
 
-  // Đóng mobile menu nếu đang mở
   document.querySelector('.menubar')?.classList.remove('mobile-open');
   const toggleBtn = document.getElementById('mobileMenuBtn');
   toggleBtn?.setAttribute('aria-expanded', 'false');
@@ -654,8 +658,8 @@ function renderHomePage() {
         <h1>Serenity Spa in <span>District 1</span></h1>
         <p>Massage thư giãn và chăm sóc cơ thể tại 285B Đường Hoàng Sa, Quận 1 — giữa lòng TP. Hồ Chí Minh.</p>
         <div class="hero-buttons">
-          <a href="#/booking" class="btn-primary">Đặt Lịch Ngay (Book Now)</a>
-          <a href="#/packages" class="btn-outline-white">Khám Phá Dịch Vụ</a>
+          <a href="/dat-lich" class="btn-primary">Đặt Lịch Ngay (Book Now)</a>
+          <a href="/dich-vu" class="btn-outline-white">Khám Phá Dịch Vụ</a>
         </div>
       </div>
     </section>
@@ -683,7 +687,7 @@ function renderHomePage() {
         </div>
 
         <div style="text-align: center; margin-top: 50px;">
-          <a href="#/packages" class="btn-outline">Xem Toàn Bộ Thực Đơn &amp; Bảng Giá →</a>
+          <a href="/dich-vu" class="btn-outline">Xem Toàn Bộ Thực Đơn &amp; Bảng Giá →</a>
         </div>
       </div>
     </section>
@@ -763,8 +767,8 @@ function renderHomePage() {
             <li><span>✓</span> Dịch vụ được lựa chọn theo nhu cầu của bạn</li>
           </ul>
           <div style="margin-top: 30px; display: flex; gap: 15px; flex-wrap: wrap;">
-            <a href="#/about" class="btn-outline">Khám Phá Về Chúng Tôi</a>
-            <a href="#/booking" class="btn-primary">Đặt Lịch Trải Nghiệm</a>
+            <a href="/ve-chung-toi" class="btn-outline">Khám Phá Về Chúng Tôi</a>
+            <a href="/dat-lich" class="btn-primary">Đặt Lịch Trải Nghiệm</a>
           </div>
         </div>
         <div class="about-img">
@@ -780,8 +784,8 @@ function renderHomePage() {
         <span style="color: var(--primary-brown); font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 2px;">Serenity Spa &amp; Wellness</span>
         <h2 style="margin-top: 5px;">Dành Thời Gian Cho Sự Thư Giãn</h2>
         <p>Chọn liệu trình phù hợp với nhu cầu của bạn hoặc gửi lời nhắn để được tư vấn thêm.</p>
-        <a href="#/packages" class="btn-outline" style="margin: 10px;">Xem Dịch Vụ</a>
-        <a href="#/booking" class="btn-primary" style="margin: 10px;">Đặt Lịch</a>
+        <a href="/dich-vu" class="btn-outline" style="margin: 10px;">Xem Dịch Vụ</a>
+        <a href="/dat-lich" class="btn-primary" style="margin: 10px;">Đặt Lịch</a>
       </div>
     </section>
 
@@ -861,7 +865,7 @@ function renderHomePage() {
             <span class="blog-date">Tháng 6, 2026</span>
             <h3>Massage Price Saigon vs Bangkok vs Bali: What an Hour Costs</h3>
             <p>So sánh chi tiết mức giá và chất lượng dịch vụ massage trị liệu tại 3 thiên đường du lịch Đông Nam Á...</p>
-            <a href="#/contact" class="read-more" style="color: var(--primary-brown); font-weight: 600; text-decoration: none;">Đọc Thêm →</a>
+            <a href="/lien-he" class="read-more" style="color: var(--primary-brown); font-weight: 600; text-decoration: none;">Đọc Thêm →</a>
           </div>
         </div>
 
@@ -873,7 +877,7 @@ function renderHomePage() {
             <span class="blog-date">Tháng 6, 2026</span>
             <h3>Massage After a Walking Tour: 7 Fixes for Sore Legs</h3>
             <p>7 phương pháp trị liệu thần tốc giúp hồi phục cơ bắp chân mỏi nhừ sau ngày dài đi bộ khám phá phố phường...</p>
-            <a href="#/contact" class="read-more" style="color: var(--primary-brown); font-weight: 600; text-decoration: none;">Đọc Thêm →</a>
+            <a href="/lien-he" class="read-more" style="color: var(--primary-brown); font-weight: 600; text-decoration: none;">Đọc Thêm →</a>
           </div>
         </div>
 
@@ -885,7 +889,7 @@ function renderHomePage() {
             <span class="blog-date">Tháng 9, 2026</span>
             <h3>Layover Massage in Ho Chi Minh City: A Smart 6-Hour Plan</h3>
             <p>Kế hoạch 6 tiếng nghỉ giữa các chuyến bay: Di chuyển nhanh từ sân bay Tân Sơn Nhất về Quận 1 thư giãn...</p>
-            <a href="#/contact" class="read-more" style="color: var(--primary-brown); font-weight: 600; text-decoration: none;">Đọc Thêm →</a>
+            <a href="/lien-he" class="read-more" style="color: var(--primary-brown); font-weight: 600; text-decoration: none;">Đọc Thêm →</a>
           </div>
         </div>
 
@@ -897,7 +901,7 @@ function renderHomePage() {
             <span class="blog-date">Tháng 6, 2026</span>
             <h3>Massage Package in District 1: Which One Fits Your Trip?</h3>
             <p>Hướng dẫn chọn gói spa trị liệu phù hợp nhất với thời gian và lịch trình chuyến du lịch của bạn...</p>
-            <a href="#/contact" class="read-more" style="color: var(--primary-brown); font-weight: 600; text-decoration: none;">Đọc Thêm →</a>
+            <a href="/lien-he" class="read-more" style="color: var(--primary-brown); font-weight: 600; text-decoration: none;">Đọc Thêm →</a>
           </div>
         </div>
 
@@ -909,7 +913,7 @@ function renderHomePage() {
             <span class="blog-date">Tháng 8, 2026</span>
             <h3>Herbal Compress Massage in Vietnam: 7 Things to Know First</h3>
             <p>Những điều cần biết về liệu pháp chườm túi thảo mộc Việt Nam cổ truyền giúp lưu thông khí huyết...</p>
-            <a href="#/contact" class="read-more" style="color: var(--primary-brown); font-weight: 600; text-decoration: none;">Đọc Thêm →</a>
+            <a href="/lien-he" class="read-more" style="color: var(--primary-brown); font-weight: 600; text-decoration: none;">Đọc Thêm →</a>
           </div>
         </div>
 
@@ -921,7 +925,7 @@ function renderHomePage() {
             <span class="blog-date">Tháng 9, 2026</span>
             <h3>Best Body Scrub for Your Skin: Rice Bran, Coffee or Salt?</h3>
             <p>Phân tích ưu điểm của cám gạo, bã cà phê và muối hồng Himalayan đối với từng loại da...</p>
-            <a href="#/contact" class="read-more" style="color: var(--primary-brown); font-weight: 600; text-decoration: none;">Đọc Thêm →</a>
+            <a href="/lien-he" class="read-more" style="color: var(--primary-brown); font-weight: 600; text-decoration: none;">Đọc Thêm →</a>
           </div>
         </div>
       </div>
@@ -931,8 +935,8 @@ function renderHomePage() {
         <h2>Ready to Relax?</h2>
         <p>Đặt lịch trước để được chuẩn bị phòng riêng chu đáo và chuyên viên phù hợp nhất mà không phải chờ đợi sau những giờ khám phá Sài Gòn.</p>
         <div class="cta-buttons">
-          <a href="#/booking" class="btn-primary">Đặt Lịch Ngay (Book Now)</a>
-          <a href="#/contact" class="btn-outline" style="border-color: #fff !important; color: #fff !important;">Liên Hệ Chỉ Đường</a>
+          <a href="/dat-lich" class="btn-primary">Đặt Lịch Ngay (Book Now)</a>
+          <a href="/lien-he" class="btn-outline" style="border-color: #fff !important; color: #fff !important;">Liên Hệ Chỉ Đường</a>
         </div>
       </div>
     </section>
@@ -990,7 +994,7 @@ function _legacy_renderServicesPage(defaultCat = 'all') {
       <h1>Thực Đơn Trị Liệu &amp; Bảng Giá</h1>
       <p>Khám phá đầy đủ các liệu trình Body Massage, Foot Care, Chăm sóc da và Gói Spa cao cấp.</p>
       <div class="breadcrumbs">
-        <a href="#/">Trang Chủ</a> / <span>Dịch Vụ &amp; Gói Trị Liệu</span>
+        <a href="/">Trang Chủ</a> / <span>Dịch Vụ &amp; Gói Trị Liệu</span>
       </div>
     </div>
 
@@ -1091,7 +1095,7 @@ function _legacy_renderServicesPage(defaultCat = 'all') {
 }
 
 /* ==========================================================================
-   3. TRANG CHI TIẾT DỊCH VỤ (SERVICE DETAIL PAGE #/services/:id)
+   3. TRANG CHI TIẾT DỊCH VỤ (SERVICE DETAIL PAGE /dich-vu/:id)
    ========================================================================== */
 function _legacy_renderServiceDetailPage(serviceId) {
   const root = document.getElementById('appRoot');
@@ -1105,7 +1109,7 @@ function _legacy_renderServiceDetailPage(serviceId) {
       <h1>${service.name}</h1>
       <p>${service.categoryName} • Trải nghiệm phục hồi tiêu chuẩn 5 sao</p>
       <div class="breadcrumbs">
-        <a href="#/">Trang Chủ</a> / <a href="#/services">Dịch Vụ</a> / <span>${service.name}</span>
+        <a href="/">Trang Chủ</a> / <a href="/lieu-trinh">Dịch Vụ</a> / <span>${service.name}</span>
       </div>
     </div>
 
@@ -1172,10 +1176,10 @@ function _legacy_renderServiceDetailPage(serviceId) {
 
           <!-- CTA Buttons -->
           <div style="display: flex; gap: 15px;">
-            <a href="#/booking?service=${service.id}" class="btn-primary" style="flex: 1; padding: 16px 0; font-size: 1rem; text-align: center;">
+            <a href="/dat-lich?service=${service.id}" class="btn-primary" style="flex: 1; padding: 16px 0; font-size: 1rem; text-align: center;">
               Đặt Lịch Liệu Trình Này Ngay
             </a>
-            <a href="#/services" class="btn-outline">
+            <a href="/lieu-trinh" class="btn-outline">
               ← Xem Dịch Vụ Khác
             </a>
           </div>
@@ -1198,7 +1202,7 @@ function _legacy_renderServiceDetailPage(serviceId) {
 }
 
 /* ==========================================================================
-   4. TRANG ĐẶT LỊCH (BOOKING WIZARD PAGE #/booking)
+   4. TRANG ĐẶT LỊCH (BOOKING WIZARD PAGE /dat-lich)
    ========================================================================== */
 function _legacy_renderBookingPage(preSelectedServiceId = null) {
   const root = document.getElementById('appRoot');
@@ -1228,7 +1232,7 @@ function _legacy_renderBookingPage(preSelectedServiceId = null) {
       <h1>Đặt Lịch Trải Nghiệm</h1>
       <p>Hệ thống đặt hẹn thông minh tại Serenity Spa &amp; Wellness. Xác nhận tức thì không chờ đợi.</p>
       <div class="breadcrumbs">
-        <a href="#/">Trang Chủ</a> / <span>Đặt Lịch</span>
+        <a href="/">Trang Chủ</a> / <span>Đặt Lịch</span>
       </div>
     </div>
 
@@ -1573,7 +1577,7 @@ function _legacy_renderBookingPage(preSelectedServiceId = null) {
 
       // Chuyển sang trang Lịch Của Tôi
       setTimeout(() => {
-        window.location.hash = '#/my-bookings';
+        navigateTo('/lich-cua-toi');
       }, 1000);
     }
   });
@@ -1587,7 +1591,7 @@ function _legacy_renderBookingPage(preSelectedServiceId = null) {
 }
 
 /* ==========================================================================
-   5. TRANG GIỚI THIỆU (ABOUT US PAGE #/about)
+   5. TRANG GIỚI THIỆU (ABOUT US PAGE /ve-chung-toi)
    ========================================================================== */
 function renderAboutPage() {
   const root = document.getElementById('appRoot');
@@ -1599,7 +1603,7 @@ function renderAboutPage() {
       <h1>Về Chúng Tôi — Serenity Spa</h1>
       <p>Câu chuyện hình thành chốn nghỉ dưỡng an yên giữa lòng Quận 1, TP. Hồ Chí Minh</p>
       <div class="breadcrumbs">
-        <a href="#/">Trang Chủ</a> / <span>Về Chúng Tôi</span>
+        <a href="/">Trang Chủ</a> / <span>Về Chúng Tôi</span>
       </div>
     </div>
 
@@ -1626,7 +1630,7 @@ function renderAboutPage() {
           <h2>Cam Kết An Toàn &amp; Vệ Sinh 100%</h2>
           <p>Tất cả các phòng trị liệu tại Serenity Spa đều được trang bị hệ thống lọc khí tươi, khăn ga và áo choàng được giặt sấy tiệt trùng sau mỗi lượt khách.</p>
           <p>Chúng tôi chỉ sử dụng các dòng tinh dầu hữu cơ ép lạnh không pha tạp chất hóa học, an toàn tuyệt đối cho mọi làn da nhạy cảm nhất.</p>
-          <a href="#/booking" class="btn-primary" style="margin-top: 15px;">Đặt Lịch Thư Giãn Ngay</a>
+          <a href="/dat-lich" class="btn-primary" style="margin-top: 15px;">Đặt Lịch Thư Giãn Ngay</a>
         </div>
         <div class="about-img">
           <img src="${img2.url}" alt="Phòng trị liệu Serenity" />
@@ -1637,7 +1641,7 @@ function renderAboutPage() {
 }
 
 /* ==========================================================================
-   6. TRANG LIÊN HỆ & BẢN ĐỒ (CONTACT US PAGE #/contact)
+   6. TRANG LIÊN HỆ & BẢN ĐỒ (CONTACT US PAGE /lien-he)
    ========================================================================== */
 function renderContactPage() {
   const root = document.getElementById('appRoot');
@@ -1647,7 +1651,7 @@ function renderContactPage() {
       <h1>Liên Hệ &amp; Hướng Dẫn Chỉ Đường</h1>
       <p>Chúng tôi luôn sẵn sàng lắng nghe và hỗ trợ bạn đặt lịch chu đáo nhất</p>
       <div class="breadcrumbs">
-        <a href="#/">Trang Chủ</a> / <span>Liên Hệ</span>
+        <a href="/">Trang Chủ</a> / <span>Liên Hệ</span>
       </div>
     </div>
 
@@ -1669,7 +1673,7 @@ function renderContactPage() {
             <div class="contact-icon">📅</div>
             <div>
               <strong style="color: var(--text-dark); display: block; margin-bottom: 4px;">Đặt Lịch:</strong>
-              <p><a href="#/booking">Chọn liệu trình và khung giờ trực tuyến</a></p>
+              <p><a href="/dat-lich">Chọn liệu trình và khung giờ trực tuyến</a></p>
             </div>
           </div>
         </div>
@@ -1737,7 +1741,7 @@ function renderContactPage() {
 }
 
 /* ==========================================================================
-   7. TRANG LỊCH CỦA TÔI (MY BOOKINGS PAGE #/my-bookings)
+   7. TRANG LỊCH CỦA TÔI (MY BOOKINGS PAGE /lich-cua-toi)
    ========================================================================== */
 function _legacy_renderMyBookingsPage() {
   const root = document.getElementById('appRoot');
@@ -1768,14 +1772,14 @@ function _legacy_renderMyBookingsPage() {
       <h1>Lịch Hẹn Của Tôi</h1>
       <p>Quản lý và tra cứu trạng thái các buổi chăm sóc sức khỏe của bạn tại Serenity Spa</p>
       <div class="breadcrumbs">
-        <a href="#/">Trang Chủ</a> / <span>Lịch Hẹn Của Tôi</span>
+        <a href="/">Trang Chủ</a> / <span>Lịch Hẹn Của Tôi</span>
       </div>
     </div>
 
     <div class="container">
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px;">
         <h2>Danh Sách Lịch Đã Đặt (${savedList.length})</h2>
-        <a href="#/booking" class="btn-primary">+ Đặt Thêm Lịch Mới</a>
+        <a href="/dat-lich" class="btn-primary">+ Đặt Thêm Lịch Mới</a>
       </div>
 
       <div class="bookings-table-wrap">
@@ -1840,7 +1844,7 @@ function _legacy_renderMyBookingsPage() {
 }
 
 /* ==========================================================================
-   8. TRANG QUẢN TRỊ ADMIN (ADMIN DASHBOARD #/admin)
+   8. TRANG QUẢN TRỊ ADMIN (ADMIN DASHBOARD /admin)
    ========================================================================== */
 function _legacy_renderAdminDashboardPage() {
   const root = document.getElementById('appRoot');
@@ -1857,7 +1861,7 @@ function _legacy_renderAdminDashboardPage() {
       <h1>Bảng Điều Khiển Quản Trị (Admin Portal)</h1>
       <p>Giám sát hiệu quả hoạt động, KPI lịch hẹn và doanh thu mô phỏng theo thời gian thực</p>
       <div class="breadcrumbs">
-        <a href="#/">Trang Chủ</a> / <span>Hệ Thống Quản Trị</span>
+        <a href="/">Trang Chủ</a> / <span>Hệ Thống Quản Trị</span>
       </div>
     </div>
 
@@ -1973,10 +1977,10 @@ function _legacy_openServiceModal(serviceId) {
         </ul>
       </div>
       <div style="display: flex; gap: 12px; margin-top: 15px;">
-        <a href="#/booking?service=${service.id}" class="btn-primary" style="flex: 1; text-align: center; text-decoration: none;" onclick="document.getElementById('serviceModal').classList.remove('show')">
+        <a href="/dat-lich?service=${service.id}" class="btn-primary" style="flex: 1; text-align: center; text-decoration: none;" onclick="document.getElementById('serviceModal').classList.remove('show')">
           Đặt Lịch Ngay
         </a>
-        <a href="#/services/${service.id}" class="btn-outline" style="flex: 1; text-align: center; text-decoration: none;" onclick="document.getElementById('serviceModal').classList.remove('show')">
+        <a href="/dich-vu/${service.id}" class="btn-outline" style="flex: 1; text-align: center; text-decoration: none;" onclick="document.getElementById('serviceModal').classList.remove('show')">
           Xem Trang Riêng
         </a>
       </div>
@@ -2002,7 +2006,7 @@ function renderPackageCardHtml(service) {
         <p class="card-desc">${service.shortDesc}</p>
         <div class="service-actions">
           <button type="button" class="view-details-btn" onclick="window.openServiceModal('${service.id}')">Xem Chi Tiết</button>
-          <a href="#/booking?service=${service.id}" class="btn-primary">Đặt Lịch Ngay</a>
+          <a href="/dat-lich?service=${service.id}" class="btn-primary">Đặt Lịch Ngay</a>
         </div>
       </div>
     </div>

@@ -1,5 +1,5 @@
 /**
- * Trang Chi Tiết Liệu Trình Độc Lập (#/services/:id).
+ * Trang Chi Tiết Liệu Trình Độc Lập (/dich-vu/:id).
  * Tính năng:
  * - Hiển thị hình ảnh kích thước lớn, thông số chi tiết.
  * - Bộ chọn Biến Thể Thời Lượng (Interactive Variant Picker): tự cập nhật giá trực tiếp.
@@ -12,6 +12,7 @@ import { authService } from '../services/authService.js';
 import { getServiceImage } from '../imageManifest.js';
 import { formatVND, esc, formatDateTime, todayStr } from '../core/utils.js';
 import { showToast } from '../ui/components.js';
+import { navigateTo } from '../core/spaRouter.js';
 import { getServiceKind } from '../domain/serviceCatalogModel.js';
 import { getDisplayPricing, salePriceMarkup } from '../ui/salePrice.js';
 
@@ -24,7 +25,7 @@ export function renderServiceDetailPage(serviceId) {
     root.innerHTML = `
       <div class="section-container" style="text-align: center; padding: 100px 20px;">
         <h2>Liệu trình không tồn tại hoặc đã ngừng hoạt động</h2>
-        <a href="#/services" class="btn-primary" style="margin-top: 20px; display: inline-block;">Quay lại danh mục</a>
+        <a href="/lieu-trinh" class="btn-primary" style="margin-top: 20px; display: inline-block;">Quay lại danh mục</a>
       </div>
     `;
     return;
@@ -45,8 +46,8 @@ export function renderServiceDetailPage(serviceId) {
   root.innerHTML = `
     <div class="page-banner" style="padding: 40px 20px;">
       <div class="breadcrumbs">
-        <a href="#/" style="color:inherit;text-decoration:none;">Trang Chủ</a> / 
-        <a href="${isPackage ? '#/packages' : '#/services'}" style="color:inherit;text-decoration:none;">${isPackage ? 'Gói Trị Liệu' : 'Liệu Trình'}</a> / 
+        <a href="/" style="color:inherit;text-decoration:none;">Trang Chủ</a> /
+        <a href="${isPackage ? '/dich-vu' : '/lieu-trinh'}" style="color:inherit;text-decoration:none;">${isPackage ? 'Gói Trị Liệu' : 'Liệu Trình'}</a> /
         ${isPackage ? 'Gói Trị Liệu' : esc(service.categoryName)}
       </div>
       <h1 style="font-size: 2.2rem;">${esc(service.name)}</h1>
@@ -119,10 +120,10 @@ export function renderServiceDetailPage(serviceId) {
           </div>
 
           <div style="display: flex; gap: 15px;">
-            <a href="#/booking?service=${esc(service.id)}&duration=${selectedDuration}&date=${selectedDate}" id="detailBookCtaBtn" class="btn-primary" style="flex: 1; text-align: center; padding: 14px 20px; font-size: 15px; text-decoration: none;">
+            <a href="/dat-lich?service=${esc(service.id)}&duration=${selectedDuration}&date=${selectedDate}" id="detailBookCtaBtn" class="btn-primary" style="flex: 1; text-align: center; padding: 14px 20px; font-size: 15px; text-decoration: none;">
               📅 Đặt Lịch Ngay (${selectedDuration} Phút)
             </a>
-            <a href="${isPackage ? '#/packages' : '#/services'}" class="btn-outline" style="text-align: center; padding: 14px 20px; font-size: 14px; text-decoration: none;">
+            <a href="${isPackage ? '/dich-vu' : '/lieu-trinh'}" class="btn-outline" style="text-align: center; padding: 14px 20px; font-size: 14px; text-decoration: none;">
               ← ${isPackage ? 'Xem Gói Khác' : 'Xem Liệu Trình Khác'}
             </a>
           </div>
@@ -162,7 +163,7 @@ export function renderServiceDetailPage(serviceId) {
   document.getElementById('detailServiceDate')?.addEventListener('change', (event) => {
     selectedDate = event.target.value || todayStr();
     priceDisplay.innerHTML = salePriceMarkup(getDisplayPricing(service, selectedDuration, selectedDate));
-    bookCta.setAttribute('href', `#/booking?service=${encodeURIComponent(service.id)}&duration=${selectedDuration}&date=${selectedDate}`);
+    bookCta.setAttribute('href', `/dat-lich?service=${encodeURIComponent(service.id)}&duration=${selectedDuration}&date=${selectedDate}`);
     document.querySelectorAll('#variantPickerGroup .variant-btn').forEach((button) => {
       button.querySelector('[data-variant-price]').innerHTML = salePriceMarkup(getDisplayPricing(service, Number(button.dataset.duration), selectedDate));
     });
@@ -179,7 +180,7 @@ export function renderServiceDetailPage(serviceId) {
       if (priceDisplay) priceDisplay.innerHTML = salePriceMarkup(getDisplayPricing(service, selectedDuration, selectedDate));
       if (durDisplay) durDisplay.textContent = `⏱ ${selectedDuration} Phút`;
       if (bookCta) {
-        bookCta.setAttribute('href', `#/booking?service=${encodeURIComponent(service.id)}&duration=${selectedDuration}&date=${selectedDate}`);
+        bookCta.setAttribute('href', `/dat-lich?service=${encodeURIComponent(service.id)}&duration=${selectedDuration}&date=${selectedDate}`);
         bookCta.textContent = `📅 Đặt Lịch Ngay (${selectedDuration} Phút)`;
       }
     });
@@ -189,7 +190,7 @@ export function renderServiceDetailPage(serviceId) {
   document.getElementById('detailFavBtn')?.addEventListener('click', async (e) => {
     if (!currentUser) {
       showToast('Vui lòng đăng nhập để lưu liệu trình yêu thích!', 'danger');
-      window.location.hash = '#/my-bookings';
+      navigateTo('/lich-cua-toi');
       return;
     }
     try {
