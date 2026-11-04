@@ -214,6 +214,10 @@ header.site-header {
   align-items: center;
   gap: 10px;
 }
+.header-music-toggle { display: inline-flex; min-height: 38px; align-items: center; justify-content: center; gap: 6px; border: 1px solid #d7c5ad; border-radius: 999px; padding: 0 12px; background: #fffdf9; color: #72542e; cursor: pointer; font: 600 12px var(--font-body); white-space: nowrap; }
+.header-music-toggle:hover { border-color: var(--primary-brown); color: var(--primary-brown-dark); }
+.header-music-toggle:disabled { cursor: not-allowed; opacity: .55; }
+.header-music-toggle:focus-visible { outline: 3px solid #246fd3; outline-offset: 2px; }
 
 .btn-whatsapp {
   background-color: #25D366;
@@ -1183,6 +1187,8 @@ footer.site-footer {
   .vertical-text { display: none; }
   header.site-header { padding: 10px 16px; }
   .header-action-group > a { display: none; }
+  .header-music-toggle { width: 38px; min-height: 38px; padding: 0; }
+  .header-music-toggle-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }
   .hero h1 { font-size: 2.2rem; }
   .packages-grid { grid-template-columns: 1fr; }
   .reviews-grid { grid-template-columns: 1fr; }
@@ -3256,3 +3262,44 @@ footer.site-footer {
 .holiday-sale-form label { display: grid; gap: 7px; align-content: start; font-size: 13px; }
 .holiday-sale-form [hidden] { display: none; }
 .holiday-sale-actions { display: flex; gap: 8px; align-items: end; flex-wrap: wrap; }
+
+/* Staff playlist manager. */
+.music-manager-page { max-width: 1020px; padding-top: 44px; padding-bottom: 90px; color: #3e342b; }
+.music-manager-back { display: inline-block; margin-bottom: 26px; color: var(--primary-brown); text-decoration: none; }
+.music-manager-heading { margin: 0 0 30px; padding: clamp(26px, 5vw, 48px); border-radius: 12px; background: linear-gradient(135deg, #f6ede1, #fbf8f2); }
+.music-manager-heading > span, .music-section-kicker { color: #986e39; font-size: 10px; font-weight: 700; letter-spacing: .16em; }
+.music-manager-heading h1 { margin: 8px 0 10px; color: #6e4922; font-family: var(--font-heading); font-size: clamp(30px, 5vw, 44px); font-weight: 400; }
+.music-manager-heading p, .music-import-card p { max-width: 670px; margin: 0; color: #756b60; line-height: 1.7; }
+.music-import-card, .music-list-card { margin: 22px 0; padding: clamp(18px, 3vw, 28px); border: 1px solid #e9e0d4; border-radius: 12px; background: #fff; box-shadow: 0 8px 28px rgba(58, 43, 24, .045); }
+.music-import-card { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.music-import-card h2, .music-list-heading h2 { margin: 5px 0 6px; color: #4c4034; font-family: var(--font-heading); font-size: 22px; font-weight: 500; }
+.music-import-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.music-file-picker { display: inline-flex; min-height: 42px; align-items: center; padding: 0 14px; border: 1px solid #d6c5ae; border-radius: 6px; color: #604723; cursor: pointer; font-size: 13px; }
+#musicFileInput { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }
+.music-manager-status { min-height: 22px; margin: 16px 3px; color: #52734f; font-size: 13px; }
+.music-manager-status.is-error { color: #a13b32; }
+.music-list-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.music-list-heading h2 { margin-bottom: 0; }
+.music-count { color: #7b7064; font-size: 12px; white-space: nowrap; }
+.music-playlist, .music-library { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.music-playlist-item, .music-library-item { display: flex; min-height: 62px; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid #eee9e2; border-radius: 8px; background: #fffdfa; }
+.music-track-index { width: 26px; color: #a07846; font-size: 12px; font-weight: 700; }
+.music-track-copy { display: grid; min-width: 0; flex: 1; gap: 4px; }
+.music-track-copy strong { overflow-wrap: anywhere; color: #443a31; font-size: 13px; font-weight: 600; }
+.music-track-copy small { color: #8b8177; font-size: 11px; }
+.music-track-actions { display: flex; align-items: center; gap: 5px; }
+.music-track-actions .btn-sm, .music-library-item .btn-sm { min-height: 32px; padding: 4px 9px; font-size: 11px; white-space: nowrap; }
+.music-track-actions button:disabled { opacity: .4; }
+.music-save-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 18px; }
+.music-save-row small { color: #84796d; line-height: 1.5; }
+.music-empty { padding: 18px 12px; color: #82786d; font-size: 13px; text-align: center; }
+.music-manager-denied { min-height: 45vh; padding-top: 80px; text-align: center; }
+.music-manager-denied h1 { margin-bottom: 14px; color: #6e4922; font-family: var(--font-heading); }
+.music-manager-denied p { margin-bottom: 24px; color: #756b60; }
+@media (max-width: 680px) {
+  .music-import-card { align-items: flex-start; flex-direction: column; }
+  .music-playlist-item, .music-library-item { align-items: flex-start; flex-wrap: wrap; }
+  .music-track-actions { width: 100%; justify-content: flex-end; }
+  .music-save-row { align-items: flex-start; flex-direction: column; }
+  .music-save-row .btn-primary { width: 100%; }
+}

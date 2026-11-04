@@ -304,6 +304,24 @@ export const apiClient = {
       body: imageBlob,
     });
   },
+  async getMusicLibrary() { return request('/music'); },
+  async uploadMusicFile(file) {
+    if (!(file instanceof Blob) || !/\.mp3$/i.test(file.name || '')) {
+      throw new Error('Hãy chọn một tệp có đuôi .mp3.');
+    }
+    return request('/music/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'audio/mpeg', 'X-Music-Filename': encodeURIComponent(file.name) },
+      body: file,
+    });
+  },
+  async saveMusicPlaylist(trackIds, expectedRevision) {
+    return request('/music/playlist', {
+      method: 'PUT',
+      headers: { 'If-Match': String(expectedRevision) },
+      body: JSON.stringify({ trackIds }),
+    });
+  },
   async initialize() {
     if (typeof window === 'undefined') return false;
     installSync();
