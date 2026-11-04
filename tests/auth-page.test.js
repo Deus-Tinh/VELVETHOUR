@@ -9,6 +9,20 @@ globalThis.window = {};
 const { renderAuthPage } = await import('../assets/js/pages/authPage.js');
 globalThis.window = initialWindow;
 
+function createWindow(href) {
+  let currentUrl = new URL(href);
+  const location = {};
+  for (const property of ['href', 'origin', 'pathname', 'search', 'hash']) {
+    Object.defineProperty(location, property, { get: () => currentUrl[property] });
+  }
+  const history = {
+    state: null,
+    pushState(state, _title, url) { this.state = state; currentUrl = new URL(url, currentUrl); },
+    replaceState(state, _title, url) { this.state = state; currentUrl = new URL(url, currentUrl); },
+  };
+  return { location, history, sessionStorage: { setItem() {}, removeItem() {} }, dispatchEvent() {} };
+}
+
 // An isolated form fixture: no browser, network requests, or application database.
 function createDocument() {
   let elements = new Map();
@@ -57,7 +71,7 @@ test('Signup shows each validation error, preserves input, and allows correction
   const originals = { document: globalThis.document, window: globalThis.window, online: apiClient.isOnline,
     register: apiClient.register, currentUser: authService.getCurrentUser };
   globalThis.document = createDocument();
-  globalThis.window = { location: { hash: '#/register?returnTo=booking' } };
+  globalThis.window = createWindow('https://serenity.local/dang-ky?returnTo=booking');
   apiClient.isOnline = () => true;
   authService.getCurrentUser = () => null;
   let requests = 0;
@@ -91,7 +105,7 @@ test('Signup shows each validation error, preserves input, and allows correction
     }
     await document.getElementById('authForm').dispatch('submit');
     assert.equal(requests, 1);
-    assert.equal(window.location.hash, '#/booking');
+    assert.equal(`${window.location.pathname}${window.location.search}`, '/dat-lich');
   } finally {
     globalThis.document = originals.document;
     globalThis.window = originals.window;
@@ -105,7 +119,7 @@ test('Auth tabs update the route and pending signup cannot be submitted twice', 
   const originals = { document: globalThis.document, window: globalThis.window, online: apiClient.isOnline,
     register: authService.register, currentUser: authService.getCurrentUser };
   globalThis.document = createDocument();
-  globalThis.window = { location: { hash: '#/login?returnTo=booking' } };
+  globalThis.window = createWindow('https://serenity.local/dang-nhap?returnTo=booking');
   apiClient.isOnline = () => true;
   authService.getCurrentUser = () => null;
   let requests = 0;
@@ -117,7 +131,7 @@ test('Auth tabs update the route and pending signup cannot be submitted twice', 
   try {
     renderAuthPage('login', 'booking');
     await document.getElementById('tabRegisterBtn').dispatch('click');
-    assert.equal(window.location.hash, '#/register?returnTo=booking');
+    assert.equal(`${window.location.pathname}${window.location.search}`, '/dang-ky?returnTo=booking');
     renderAuthPage('register', 'booking');
     const form = document.getElementById('authForm');
     const pending = form.dispatch('submit');
@@ -125,10 +139,10 @@ test('Auth tabs update the route and pending signup cannot be submitted twice', 
     assert.equal(requests, 1);
     assert.equal(document.getElementById('authSubmitBtn').disabled, true);
     await document.getElementById('tabLoginBtn').dispatch('click');
-    assert.equal(window.location.hash, '#/register?returnTo=booking');
+    assert.equal(`${window.location.pathname}${window.location.search}`, '/dang-ky?returnTo=booking');
     finish({ name: 'Khách kiểm thử', role: 'customer' });
     await pending;
-    assert.equal(window.location.hash, '#/booking');
+    assert.equal(`${window.location.pathname}${window.location.search}`, '/dat-lich');
   } finally {
     globalThis.document = originals.document;
     globalThis.window = originals.window;

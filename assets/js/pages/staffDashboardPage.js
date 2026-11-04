@@ -1,5 +1,5 @@
 /**
- * Trang Bảng Làm Việc Của Nhân Viên Trị Liệu (#/staff).
+ * Trang Bảng Làm Việc Của Nhân Viên Trị Liệu (/nhan-vien).
  * Tính năng:
  * - Dành riêng cho tài khoản Staff (hoặc Admin chuyển vai trò).
  * - Tự động tải danh sách booking thuộc về chuyên viên đăng nhập (staffId).
@@ -28,7 +28,7 @@ export function renderStaffDashboardPage() {
         <div style="font-size: 48px; margin-bottom: 15px;">🔒</div>
         <h2>Khu Vực Dành Cho Chuyên Viên Trị Liệu</h2>
         <p style="color: var(--text-light); margin: 15px 0 25px 0;">Vui lòng đăng nhập với tài khoản chuyên viên để xem lịch phân công.</p>
-        <a href="#/login" class="btn-primary" style="display: inline-block; text-decoration: none;">Đăng Nhập Chuyên Viên</a>
+        <a href="/dang-nhap" class="btn-primary" style="display: inline-block; text-decoration: none;">Đăng Nhập Chuyên Viên</a>
       </div>
     `;
     return;
@@ -45,7 +45,7 @@ export function renderStaffDashboardPage() {
 
   root.innerHTML = `
     <div class="page-banner" style="padding: 35px 20px;">
-      <div class="breadcrumbs"><a href="#/" style="color:inherit;text-decoration:none;">Trang Chủ</a> / Staff Portal</div>
+      <div class="breadcrumbs"><a href="/" style="color:inherit;text-decoration:none;">Trang Chủ</a> / Staff Portal</div>
       <h1 style="font-size: 2.2rem;">LỊCH LÀM VIỆC CHUYÊN VIÊN</h1>
       <p>Chuyên viên: <strong>${esc(staffInfo.name)}</strong> (${esc(staffInfo.title)})</p>
     </div>

@@ -1,5 +1,5 @@
 /**
- * Trang Đăng Nhập & Đăng Ký Tài Khoản (#/login & #/register).
+ * Trang Đăng Nhập & Đăng Ký Tài Khoản (/dang-nhap & /dang-ky).
  * Tính năng:
  * - Hỗ trợ đăng nhập vai trò Customer, Staff, Admin.
  * - Đăng ký tài khoản Customer mới với validation đầy đủ.
@@ -7,6 +7,7 @@
  */
 import { authService } from '../services/authService.js';
 import { esc } from '../core/utils.js';
+import { navigateTo } from '../core/spaRouter.js';
 import { showToast } from '../ui/components.js';
 
 let authRequestPending = false;
@@ -41,10 +42,10 @@ function showAuthErrors(form, error) {
 }
 
 function authDestination(user, returnTo) {
-  if (returnTo === 'booking' && user.role === 'customer') return '#/booking';
-  if (user.role === 'admin') return '#/admin';
-  if (user.role === 'staff') return '#/staff';
-  return '#/my-bookings';
+  if (returnTo === 'booking' && user.role === 'customer') return '/dat-lich';
+  if (user.role === 'admin') return '/admin';
+  if (user.role === 'staff') return '/nhan-vien';
+  return '/lich-cua-toi';
 }
 
 export function renderAuthPage(mode = 'login', returnTo = null) {
@@ -65,9 +66,9 @@ export function renderAuthPage(mode = 'login', returnTo = null) {
         <h2>Bạn đã đăng nhập với vai trò: ${currentUser.role.toUpperCase()}</h2>
         <p style="margin: 15px 0 25px 0; color: var(--text-light);">${esc(currentUser.name)} (${esc(currentUser.email)})</p>
         <div style="display: flex; gap: 12px; justify-content: center;">
-          <a href="#/my-bookings" class="btn-primary" style="text-decoration:none;">Lịch Của Tôi</a>
-          ${currentUser.role === 'admin' ? `<a href="#/admin" class="btn-primary" style="text-decoration:none;background:#1e293b!important;">Admin Portal</a>` : ''}
-          ${currentUser.role === 'staff' ? `<a href="#/staff" class="btn-primary" style="text-decoration:none;background:#059669!important;">Staff Portal</a>` : ''}
+          <a href="/lich-cua-toi" class="btn-primary" style="text-decoration:none;">Lịch Của Tôi</a>
+          ${currentUser.role === 'admin' ? `<a href="/admin" class="btn-primary" style="text-decoration:none;background:#1e293b!important;">Admin Portal</a>` : ''}
+          ${currentUser.role === 'staff' ? `<a href="/nhan-vien" class="btn-primary" style="text-decoration:none;background:#059669!important;">Staff Portal</a>` : ''}
           <button type="button" class="btn-outline" id="authLogoutBtn">Đăng Xuất</button>
         </div>
       </div>
@@ -154,9 +155,10 @@ export function renderAuthPage(mode = 'login', returnTo = null) {
   }
   const switchMode = (nextMode) => {
     if (authRequestPending) return;
-    const hash = `#/${nextMode}${authReturnTo ? '?returnTo=booking' : ''}`;
-    if (window.location.hash === hash) renderAuthPage(nextMode, authReturnTo);
-    else window.location.hash = hash;
+    const path = nextMode === 'register' ? '/dang-ky' : '/dang-nhap';
+    const search = authReturnTo ? '?returnTo=booking' : '';
+    if (`${window.location.pathname}${window.location.search}` === `${path}${search}`) renderAuthPage(nextMode, authReturnTo);
+    else navigateTo(`${path}${search}`);
   };
   document.getElementById('tabLoginBtn')?.addEventListener('click', () => switchMode('login'));
   document.getElementById('tabRegisterBtn')?.addEventListener('click', () => switchMode('register'));
@@ -179,13 +181,13 @@ export function renderAuthPage(mode = 'login', returnTo = null) {
       if (authMode === 'login') {
         const user = await authService.login({ email, password });
         showToast(`Đăng nhập thành công! Chào mừng ${user.name}`, 'success');
-        window.location.hash = authDestination(user, authReturnTo);
+        navigateTo(authDestination(user, authReturnTo));
       } else {
         const name = form.querySelector('#authRegName')?.value.trim();
         const phone = form.querySelector('#authRegPhone')?.value.trim();
         const user = await authService.register({ name, email, phone, password });
         showToast('Đăng ký tài khoản thành công!', 'success');
-        window.location.hash = authDestination(user, authReturnTo);
+        navigateTo(authDestination(user, authReturnTo));
       }
     } catch (err) {
       showToast(showAuthErrors(form, err), 'danger');

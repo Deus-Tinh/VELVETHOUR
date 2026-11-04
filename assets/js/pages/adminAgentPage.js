@@ -195,7 +195,7 @@ export function renderAdminAgent(container) {
       pending.querySelector('p').textContent = result.reply || 'Agent chưa trả về nội dung.';
       for (const action of result.actions || []) if (action.sale) addMessage(transcript, 'assistant', `Sale đã xác minh: ${action.sale.name} · ${action.sale.serviceDateFrom} đến ${action.sale.serviceDateTo} · phiên bản ${action.sale.revision}.`);
       for (const change of result.siteChanges || []) {
-        if (change.page) addMessage(transcript, 'assistant', `Trang đã xác minh: ${change.page.title} · #/pages/${change.page.slug}.`);
+        if (change.page) addMessage(transcript, 'assistant', `Trang đã xác minh: ${change.page.title} · /uu-dai/${change.page.slug}.`);
         if (change.menuItem) addMessage(transcript, 'assistant', `Menu đã xác minh: ${change.menuItem.label} → ${change.menuItem.targetHref}.`);
       }
       for (const quote of result.quotes || []) {

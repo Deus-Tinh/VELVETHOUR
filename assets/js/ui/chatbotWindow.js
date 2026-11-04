@@ -1,5 +1,6 @@
 import { chatbotService } from '../services/chatbotService.js';
 import { getServiceImage } from '../imageManifest.js';
+import { cleanSpaHref } from '../core/spaRouter.js';
 
 const MAX_LENGTH = 1200;
 const money = new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND', maximumFractionDigits: 0 });
@@ -32,7 +33,8 @@ function ensureStyles() {
 }
 
 function safeRoute(path) {
-  return typeof path === 'string' && path.startsWith('#/') ? path : '#/';
+  const cleaned = cleanSpaHref(path, window.location.href);
+  return cleaned.startsWith('/') && !cleaned.startsWith('//') ? cleaned : '/';
 }
 
 function formatBookingDate(date) {
@@ -71,11 +73,11 @@ function addServiceCard(container, service, selectedServiceId = null) {
 
   const actions = el('div', 'serenity-chat-service-actions');
   const detailsLink = el('a', 'serenity-chat-card-link', 'Xem chi tiết');
-  detailsLink.href = `#/services/${encodeURIComponent(service.id)}${service.serviceDate ? `?date=${encodeURIComponent(service.serviceDate)}` : ''}`;
+  detailsLink.href = `/dich-vu/${encodeURIComponent(service.id)}${service.serviceDate ? `?date=${encodeURIComponent(service.serviceDate)}` : ''}`;
   const bookParams = new URLSearchParams({ service: service.id, duration: String(service.duration) });
   if (service.serviceDate) bookParams.set('date', service.serviceDate);
   const bookingLink = el('a', 'serenity-chat-card-primary', 'Đặt lịch');
-  bookingLink.href = `#/booking?${bookParams}`;
+  bookingLink.href = `/dat-lich?${bookParams}`;
   const slots = el('button', 'serenity-chat-card-link', 'Kiểm tra lịch');
   slots.type = 'button';
   slots.dataset.action = 'checkAvailability';

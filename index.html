@@ -18,25 +18,25 @@
        ======================================================================== -->
   <header class="site-header">
     <div class="logo-wrap">
-      <a href="#/" class="logo-text">SERENITY SPA</a>
+      <a href="/" class="logo-text">SERENITY SPA</a>
       <span class="logo-sub">&amp; Wellness</span>
     </div>
 
     <nav class="menubar" id="primaryNav" aria-label="Điều hướng chính">
       <ul>
-        <li><a href="#/" class="active">Trang Chủ</a></li>
-        <li><a href="#/packages">Dịch Vụ</a></li>
-        <li><a href="#/about">Về Chúng Tôi</a></li>
-        <li><a href="#/contact">Liên Hệ</a></li>
-        <li><a href="#/my-bookings">Lịch Của Tôi</a></li>
+        <li><a href="/" class="active">Trang Chủ</a></li>
+        <li><a href="/dich-vu">Dịch Vụ</a></li>
+        <li><a href="/ve-chung-toi">Về Chúng Tôi</a></li>
+        <li><a href="/lien-he">Liên Hệ</a></li>
+        <li><a href="/lich-cua-toi">Lịch Của Tôi</a></li>
       </ul>
     </nav>
 
     <div class="header-action-group">
-      <a href="#/booking" class="btn-primary" style="padding: 10px 22px; font-size: 13px;">
+      <a href="/dat-lich" class="btn-primary" style="padding: 10px 22px; font-size: 13px;">
         Book Now
       </a>
-      <a href="#/contact" class="btn-whatsapp">
+      <a href="/lien-he" class="btn-whatsapp">
         <span>✉️</span> Liên Hệ
       </a>
       <button type="button" class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Mở menu điều hướng" aria-controls="primaryNav" aria-expanded="false">
@@ -47,7 +47,7 @@
 
   <!-- ========================================================================
        SPA APPLICATION ROOT (DYNAMIC PAGE RENDERER)
-       Tất cả các trang độc lập (#/, #/services, #/about, #/booking...) được render tại đây
+       Các trang SPA được render tại đây qua URL path và History API
        ======================================================================== -->
   <main id="appRoot">
     <!-- Nội dung trang được tự động render bởi router trong assets/js/demo.js -->
@@ -69,8 +69,8 @@
           </p>
           <p style="font-size: 0.88rem; line-height: 1.8; color: #bbb;">
             <strong style="color: #fff;">Địa chỉ:</strong> 285B Đường Hoàng Sa, Phường Tân Định, Quận 1, TP. Hồ Chí Minh<br />
-            <strong style="color: #fff;">Đặt lịch:</strong> <a href="#/booking" style="color: var(--accent-orange); font-weight: 600;">Đặt lịch trực tuyến</a><br />
-            <strong style="color: #fff;">Liên hệ:</strong> <a href="#/contact" style="color: var(--accent-orange); font-weight: 600;">Gửi tin nhắn cho Serenity Spa</a>
+            <strong style="color: #fff;">Đặt lịch:</strong> <a href="/dat-lich" style="color: var(--accent-orange); font-weight: 600;">Đặt lịch trực tuyến</a><br />
+            <strong style="color: #fff;">Liên hệ:</strong> <a href="/lien-he" style="color: var(--accent-orange); font-weight: 600;">Gửi tin nhắn cho Serenity Spa</a>
           </p>
         </div>
 
@@ -81,7 +81,7 @@
             <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 10px;">
               <div style="width: 44px; height: 44px; border-radius: 50%; background: var(--primary-brown); display: flex; align-items: center; justify-content: center; color: #fff; font-weight: bold; font-size: 20px;">S</div>
               <div>
-                <a href="#/contact" style="color: #fff; font-weight: 600; font-size: 0.95rem; text-decoration: none;">
+                <a href="/lien-he" style="color: #fff; font-weight: 600; font-size: 0.95rem; text-decoration: none;">
                   Serenity Spa &amp; Wellness
                 </a>
                 <div style="color: #aaa; font-size: 0.78rem;">Massage &amp; chăm sóc sức khỏe</div>
@@ -90,7 +90,7 @@
             <p style="font-size: 0.8rem; color: #aaa; margin-bottom: 10px; line-height: 1.5;">
               Cần tư vấn liệu trình? Gửi lời nhắn cho chúng tôi qua trang liên hệ.
             </p>
-            <a href="#/contact" class="btn-primary" style="display: block; text-align: center; padding: 7px 0; font-size: 11px; border-radius: 4px;">
+            <a href="/lien-he" class="btn-primary" style="display: block; text-align: center; padding: 7px 0; font-size: 11px; border-radius: 4px;">
               Liên Hệ Serenity Spa
             </a>
           </div>
@@ -108,16 +108,16 @@
         <div class="footer-col">
           <h4 style="color: #fff; font-size: 1.15rem; margin-bottom: 15px;">Liên Kết Nhanh</h4>
           <ul class="footer-links-list">
-            <li><a href="#/">Trang Chủ</a></li>
-            <li><a href="#/packages">Dịch Vụ</a></li>
-            <li><a href="#/about">Về Chúng Tôi</a></li>
-            <li><a href="#/contact">Liên Hệ &amp; Chỉ Đường</a></li>
-            <li><a href="#/booking">Đặt Lịch Ngay</a></li>
-            <li><a href="#/my-bookings">Tra Cứu Lịch Hẹn</a></li>
+            <li><a href="/">Trang Chủ</a></li>
+            <li><a href="/dich-vu">Dịch Vụ</a></li>
+            <li><a href="/ve-chung-toi">Về Chúng Tôi</a></li>
+            <li><a href="/lien-he">Liên Hệ &amp; Chỉ Đường</a></li>
+            <li><a href="/dat-lich">Đặt Lịch Ngay</a></li>
+            <li><a href="/lich-cua-toi">Tra Cứu Lịch Hẹn</a></li>
           </ul>
 
           <div style="display: flex; gap: 10px; margin-top: 18px;">
-            <a href="#/contact" aria-label="Liên hệ Serenity Spa" style="width: 32px; height: 32px; border-radius: 50%; background: rgba(255,255,255,0.1); display: flex; align-items: center; justify-content: center; color: #fff; text-decoration: none; font-size: 14px;">✉️</a>
+            <a href="/lien-he" aria-label="Liên hệ Serenity Spa" style="width: 32px; height: 32px; border-radius: 50%; background: rgba(255,255,255,0.1); display: flex; align-items: center; justify-content: center; color: #fff; text-decoration: none; font-size: 14px;">✉️</a>
             <a href="https://www.google.com/maps/search/?api=1&amp;query=285B%20%C4%90%C6%B0%E1%BB%9Dng%20Ho%C3%A0ng%20Sa%2C%20Ph%C6%B0%E1%BB%9Dng%20T%C3%A2n%20%C4%90%E1%BB%8Bnh%2C%20Qu%E1%BA%ADn%201%2C%20TP.%20H%E1%BB%93%20Ch%C3%AD%20Minh" target="_blank" rel="noopener" aria-label="Mở bản đồ Google Maps" style="width: 32px; height: 32px; border-radius: 50%; background: rgba(255,255,255,0.1); display: flex; align-items: center; justify-content: center; color: #EA4335; text-decoration: none; font-size: 14px;">📍</a>
           </div>
         </div>
@@ -128,7 +128,7 @@
           <div class="footer-badge-box">
             <div style="font-size: 24px; margin-bottom: 10px;">🌿</div>
             <p style="font-size: 0.88rem; color: #ddd; margin: 0 0 14px; line-height: 1.6;">Chọn liệu trình phù hợp và đặt lịch trực tuyến với Serenity Spa &amp; Wellness.</p>
-            <a href="#/booking" class="btn-primary" style="display: block; text-align: center; padding: 8px 0; font-size: 12px;">Đặt Lịch Ngay</a>
+            <a href="/dat-lich" class="btn-primary" style="display: block; text-align: center; padding: 8px 0; font-size: 12px;">Đặt Lịch Ngay</a>
           </div>
         </div>
       </div>
@@ -151,10 +151,10 @@
        MOBILE STICKY BOTTOM CTA
        ======================================================================== -->
   <div class="mobile-sticky-cta">
-    <a href="#/contact" class="btn-outline btn-half" style="font-size: 13px;">
+    <a href="/lien-he" class="btn-outline btn-half" style="font-size: 13px;">
       ✉️ Liên Hệ
     </a>
-    <a href="#/booking" class="btn-primary btn-half" style="font-size: 13px;">
+    <a href="/dat-lich" class="btn-primary btn-half" style="font-size: 13px;">
       📅 Đặt Lịch Ngay
     </a>
   </div>

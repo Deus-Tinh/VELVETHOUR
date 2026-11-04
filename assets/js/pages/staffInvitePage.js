@@ -1,12 +1,13 @@
 import { authService } from '../services/authService.js';
 import { apiClient } from '../services/apiClient.js';
 import { esc } from '../core/utils.js';
+import { navigateTo, STAFF_INVITE_TOKEN_KEY } from '../core/spaRouter.js';
 import { showToast } from '../ui/components.js';
 
 export async function renderStaffInvitePage(token) {
   const root = document.getElementById('appRoot');
   if (!root) return;
-  const route = window.location.hash;
+  const route = `${window.location.pathname}${window.location.search}`;
   root.innerHTML = `
     <section class="section-container" style="max-width:620px;padding-top:70px;padding-bottom:90px;">
       <div style="background:#fff;padding:32px;border-radius:12px;box-shadow:0 4px 24px rgba(0,0,0,.07);">
@@ -22,7 +23,7 @@ export async function renderStaffInvitePage(token) {
 
   try {
     const { invitation } = await apiClient.getStaffInvite(token);
-    if (window.location.hash !== route || !root.isConnected) return;
+    if (`${window.location.pathname}${window.location.search}` !== route || !root.isConnected) return;
     root.innerHTML = `
       <section class="section-container" style="max-width:620px;padding-top:70px;padding-bottom:90px;">
         <div style="background:#fff;padding:32px;border-radius:12px;box-shadow:0 4px 24px rgba(0,0,0,.07);">
@@ -65,8 +66,9 @@ export async function renderStaffInvitePage(token) {
       if (errorNode) errorNode.textContent = '';
       try {
         await authService.acceptStaffInvite({ token, phone, password });
+        try { window.sessionStorage.removeItem(STAFF_INVITE_TOKEN_KEY); } catch { /* storage may be unavailable */ }
         showToast('Tài khoản chuyên viên đã được kích hoạt.', 'success');
-        window.location.hash = '#/staff';
+        navigateTo('/nhan-vien');
       } catch (error) {
         if (errorNode) errorNode.textContent = error.message || 'Không thể kích hoạt lời mời.';
       } finally {
@@ -74,12 +76,12 @@ export async function renderStaffInvitePage(token) {
       }
     });
   } catch (error) {
-    if (window.location.hash !== route || !root.isConnected) return;
+    if (`${window.location.pathname}${window.location.search}` !== route || !root.isConnected) return;
     showInviteError(root, error.message || 'Lời mời không hợp lệ hoặc đã hết hạn. Hãy liên hệ quản trị viên để nhận lời mời mới.');
   }
 }
 
 function showInviteError(root, message) {
   const status = root.querySelector('#staffInviteStatus');
-  if (status) status.innerHTML = `${esc(message)}<br><a href="#/login" style="display:inline-block;margin-top:14px;color:var(--primary-brown);font-weight:600;">Đến trang đăng nhập</a>`;
+  if (status) status.innerHTML = `${esc(message)}<br><a href="/dang-nhap" style="display:inline-block;margin-top:14px;color:var(--primary-brown);font-weight:600;">Đến trang đăng nhập</a>`;
 }

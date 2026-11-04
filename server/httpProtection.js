@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { isIP } from 'node:net';
+import { isSpaPath } from '../assets/js/core/spaRouter.js';
 
 export const HTTP_SERVER_OPTIONS = Object.freeze({
   headersTimeout: 10_000,
@@ -68,9 +69,10 @@ export function createApiRateLimiter({ limit = 30, windowMs = 1000, maxKeys = 10
 export function resolvePublicAsset(encodedPathname, root) {
   let pathname;
   try { pathname = decodeURIComponent(encodedPathname); } catch { return null; }
-  if (pathname === '/') pathname = '/index.html';
-  if (pathname !== '/index.html' && !pathname.startsWith('/assets/') && !pathname.startsWith('/tests/')) return null;
   if (pathname.includes('\\') || pathname.split('/').some((segment) => segment.startsWith('.')) || pathname.includes('\0')) return null;
+  if (pathname === '/') pathname = '/index.html';
+  else if (isSpaPath(pathname)) pathname = '/index.html';
+  if (pathname !== '/index.html' && !pathname.startsWith('/assets/') && !pathname.startsWith('/tests/')) return null;
   const file = path.resolve(root, `.${pathname}`);
   return file.startsWith(`${root}${path.sep}`) ? file : null;
 }

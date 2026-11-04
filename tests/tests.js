@@ -16,6 +16,7 @@ import { addDays, todayStr, clock } from '../assets/js/core/utils.js';
 import { createTestRunner } from './testRunner.js';
 import { isAllowedOrigin } from '../server/originPolicy.js';
 import { TEST_ACCOUNT_PASSWORDS, TEST_PASSWORDS } from './testAccounts.js';
+import { cleanSpaHref, isSpaPath, migrateLegacyHash, normalizeSpaPath, routeFromLegacyHash, titleForSpaPath, STAFF_INVITE_TOKEN_KEY } from '../assets/js/core/spaRouter.js';
 
 export async function runAllTests() {
   const { test, expect, results } = createTestRunner();
@@ -41,6 +42,43 @@ export async function runAllTests() {
     assert(isAllowedOrigin('http://localhost:3001', direct), 'Origin localhost hợp lệ phải được chấp nhận');
     assert(isAllowedOrigin('https://bmfk8rpl-3001.asse.devtunnels.ms', tunnel), 'Origin Dev Tunnel được proxy chuyển tiếp phải được chấp nhận');
     assert(!isAllowedOrigin('https://attacker.example', tunnel), 'Origin khác phải bị từ chối');
+  });
+
+  await test('SPA chuyển hash cũ sang URL path sạch, giữ query và hỗ trợ liên kết trực tiếp', async () => {
+    const mappings = [
+      ['#/', '/'], ['#/home', '/'], ['#/packages', '/dich-vu'], ['#/services', '/lieu-trinh'],
+      ['#/services/stone-massage', '/dich-vu/stone-massage'], ['#/booking?service=stone-massage&date=2026-11-04', '/dat-lich'],
+      ['#/about', '/ve-chung-toi'], ['#/contact', '/lien-he'], ['#/my-bookings', '/lich-cua-toi'],
+      ['#/admin', '/admin'], ['#/staff', '/nhan-vien'], ['#/login', '/dang-nhap'], ['#/register', '/dang-ky'],
+      ['#/pages/uu-dai-le', '/uu-dai/uu-dai-le'],
+    ];
+    for (const [legacyHash, pathname] of mappings) {
+      const route = routeFromLegacyHash(legacyHash);
+      assert(route?.pathname === pathname, `${legacyHash} phải thành ${pathname}`);
+    }
+    assert(routeFromLegacyHash('#/booking?service=stone-massage').search === '?service=stone-massage', 'Query đặt lịch phải được giữ lại');
+    assert(cleanSpaHref('#/pages/uu-dai-le') === '/uu-dai/uu-dai-le', 'Menu trang động phải có href path sạch');
+    assert(normalizeSpaPath('/dat-lich/') === '/dat-lich', 'Chuẩn hóa dấu gạch chéo cuối đường dẫn');
+    assert(isSpaPath('/dich-vu/stone-massage') && isSpaPath('/uu-dai/uu-dai-le'), 'Route động cần được nhận diện');
+    assert(!isSpaPath('/api/health') && !isSpaPath('/unknown'), 'API và route lạ không được nhận là SPA');
+    assert(titleForSpaPath('/dat-lich') === 'Đặt Lịch | Serenity Spa', 'Route phải đặt title tương ứng');
+  });
+
+  await test('Lời mời nhân viên giữ token ngoài path và xóa fragment sau khi chuyển sang session', async () => {
+    const saved = new Map();
+    const storageMock = { setItem(key, value) { saved.set(key, value); } };
+    let replacedUrl = '';
+    const historyMock = { state: null, replaceState(_state, _title, url) { replacedUrl = url; } };
+    const oldInvite = { pathname: '/', search: '', hash: '#/staff-invite?token=legacy-token' };
+    assert(migrateLegacyHash(oldInvite, historyMock, storageMock), 'Hash lời mời cũ cần được di chuyển');
+    assert(replacedUrl === '/moi-nhan-vien', 'URL cũ cần được đổi sang path sạch');
+    assert(saved.get(STAFF_INVITE_TOKEN_KEY) === 'legacy-token', 'Token lời mời cũ cần được giữ trong session');
+
+    replacedUrl = '';
+    const cleanInvite = { pathname: '/moi-nhan-vien', search: '', hash: '#token=fragment-token' };
+    assert(migrateLegacyHash(cleanInvite, historyMock, storageMock), 'Fragment token của link mới cần được di chuyển');
+    assert(replacedUrl === '/moi-nhan-vien', 'Token cần được xóa khỏi URL trước khi render');
+    assert(saved.get(STAFF_INVITE_TOKEN_KEY) === 'fragment-token', 'Token mới cần được giữ trong session');
   });
 
   // 1. Service CRUD

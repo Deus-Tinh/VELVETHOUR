@@ -1,5 +1,5 @@
 /**
- * Trang Lịch Hẹn Của Tôi & Hồ Sơ Khách Hàng (#/my-bookings).
+ * Trang Lịch Hẹn Của Tôi & Hồ Sơ Khách Hàng (/lich-cua-toi).
  * Tính năng:
  * - Tra cứu lịch theo SĐT hoặc xem theo tài khoản đăng nhập.
  * - Danh sách Lịch sắp tới & Lịch sử hoàn thành.
@@ -30,7 +30,7 @@ export function renderMyBookingsPage() {
 
   root.innerHTML = `
     <div class="page-banner" style="padding: 40px 20px;">
-      <div class="breadcrumbs"><a href="#/" style="color:inherit;text-decoration:none;">Trang Chủ</a> / Lịch Của Tôi</div>
+      <div class="breadcrumbs"><a href="/" style="color:inherit;text-decoration:none;">Trang Chủ</a> / Lịch Của Tôi</div>
       <h1 style="font-size: 2.2rem;">TRUNG TÂM KHÁCH HÀNG &amp; LỊCH HẸN</h1>
       <p>Tra cứu lịch trị liệu, đánh giá trải nghiệm và quản lý các liệu trình spa yêu thích.</p>
     </div>
@@ -62,7 +62,7 @@ export function renderMyBookingsPage() {
             </p>
           </div>
           <div>
-            <a href="#/login" class="btn-primary" style="padding: 9px 18px; font-size: 13px; text-decoration: none;">
+            <a href="/dang-nhap" class="btn-primary" style="padding: 9px 18px; font-size: 13px; text-decoration: none;">
               🔑 Đăng Nhập / Đăng Ký
             </a>
           </div>
@@ -160,7 +160,7 @@ async function renderBookingsTab(container, currentUser) {
         <p style="color: var(--text-light); font-size: 14px; margin-bottom: 20px;">
           Quý khách chưa có lịch đặt nào hoặc chưa nhập đúng số điện thoại.
         </p>
-        <a href="#/booking" class="btn-primary" style="display: inline-block; text-decoration: none;">
+        <a href="/dat-lich" class="btn-primary" style="display: inline-block; text-decoration: none;">
           Đặt Lịch Ngay Hôm Nay
         </a>
       </div>
@@ -230,7 +230,7 @@ async function renderBookingsTab(container, currentUser) {
                           Đánh Giá
                         </button>
                       ` : ''}
-                      <a href="#/booking?service=${esc(b.serviceId)}" class="btn-sm btn-outline" style="text-decoration:none;">
+                      <a href="/dat-lich?service=${esc(b.serviceId)}" class="btn-sm btn-outline" style="text-decoration:none;">
                         Đặt Lại
                       </a>
                     </div>
@@ -489,7 +489,7 @@ function renderFavoritesTab(container, currentUser) {
     container.innerHTML = `
       <div style="text-align: center; padding: 50px 20px; background: #fff; border-radius: 8px;">
         <p style="color: var(--text-light); margin-bottom: 15px;">Vui lòng đăng nhập để xem danh sách liệu trình yêu thích của bạn.</p>
-        <a href="#/login" class="btn-primary" style="display: inline-block; text-decoration: none;">Đăng Nhập Ngay</a>
+        <a href="/dang-nhap" class="btn-primary" style="display: inline-block; text-decoration: none;">Đăng Nhập Ngay</a>
       </div>
     `;
     return;
@@ -502,7 +502,7 @@ function renderFavoritesTab(container, currentUser) {
         <div style="font-size: 36px; margin-bottom: 10px;">♥</div>
         <h4 style="color: var(--text-dark); margin-bottom: 6px;">Chưa có liệu trình yêu thích</h4>
         <p style="color: var(--text-light); font-size: 13px;">Hãy bấm biểu tượng trái tim ở trang Dịch Vụ để lưu lại các liệu trình bạn yêu thích.</p>
-        <a href="#/services" class="btn-outline" style="margin-top: 15px; display: inline-block; text-decoration: none;">Khám Phá Dịch Vụ</a>
+        <a href="/lieu-trinh" class="btn-outline" style="margin-top: 15px; display: inline-block; text-decoration: none;">Khám Phá Dịch Vụ</a>
       </div>
     `;
     return;
@@ -517,8 +517,8 @@ function renderFavoritesTab(container, currentUser) {
             <div class="service-duration">⏱ ${f.service.duration} Phút • ${formatVND(f.service.price)}</div>
             <p class="card-desc">${esc(f.service.shortDesc)}</p>
             <div class="service-actions">
-              <a href="#/services/${esc(f.service.id)}" class="btn-outline">Xem Chi Tiết</a>
-              <a href="#/booking?service=${esc(f.service.id)}" class="btn-primary">Đặt Lịch</a>
+              <a href="/dich-vu/${esc(f.service.id)}" class="btn-outline">Xem Chi Tiết</a>
+              <a href="/dat-lich?service=${esc(f.service.id)}" class="btn-primary">Đặt Lịch</a>
             </div>
           </div>
         </div>

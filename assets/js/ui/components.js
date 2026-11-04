@@ -99,10 +99,10 @@ export function openServiceModal(serviceId, serviceDate = todayStr()) {
         </ul>
       </div>
       <div style="display: flex; gap: 12px; margin-top: 15px;">
-        <a href="#/booking?service=${esc(service.id)}&date=${esc(serviceDate)}" class="btn-primary" style="flex: 1; text-align: center; text-decoration: none;" id="modalBookBtn">
+        <a href="/dat-lich?service=${esc(service.id)}&date=${esc(serviceDate)}" class="btn-primary" style="flex: 1; text-align: center; text-decoration: none;" id="modalBookBtn">
           Đặt Lịch Ngay
         </a>
-        <a href="#/services/${esc(service.id)}?date=${esc(serviceDate)}" class="btn-outline" style="flex: 1; text-align: center; text-decoration: none;" id="modalDetailBtn">
+        <a href="/dich-vu/${esc(service.id)}?date=${esc(serviceDate)}" class="btn-outline" style="flex: 1; text-align: center; text-decoration: none;" id="modalDetailBtn">
           Xem Trang Riêng
         </a>
       </div>

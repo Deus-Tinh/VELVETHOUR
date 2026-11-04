@@ -1,5 +1,5 @@
 /**
- * Trang Danh Mục Dịch Vụ & Gói Trị Liệu (#/services & #/packages).
+ * Trang Danh Mục Dịch Vụ & Gói Trị Liệu (/lieu-trinh & /dich-vu).
  * Tính năng:
  * - Tìm kiếm tiếng Việt không dấu (NormalizeText).
  * - Bộ lọc theo Nhóm dịch vụ, Khoảng giá, Thời lượng.
@@ -19,6 +19,7 @@ import { formatVND, esc, todayStr, isValidDateStr } from '../core/utils.js';
 import { showToast, openServiceModal } from '../ui/components.js';
 import { THERAPY_GROUPS, getTherapyGroupName } from '../domain/therapyGroupModel.js';
 import { getServiceKind } from '../domain/serviceCatalogModel.js';
+import { navigateTo } from '../core/spaRouter.js';
 
 let filterState = {
   q: '',
@@ -39,9 +40,9 @@ let searchTimer = null;
 let advancedFiltersOpen = false;
 
 if (typeof window !== 'undefined') {
-  window.addEventListener('hashchange', () => {
-    const hash = window.location.hash || '#/';
-    if (hash !== '#/services' && hash !== '#/packages') activeCatalogRoute = null;
+  window.addEventListener('popstate', () => {
+    const path = window.location.pathname;
+    if (path !== '/lieu-trinh' && path !== '/dich-vu') activeCatalogRoute = null;
   });
 }
 
@@ -79,7 +80,7 @@ export function renderServicesPage(defaultCat = 'all', initialDate = '') {
 
   root.innerHTML = `
     <div class="page-banner">
-      <div class="breadcrumbs"><a href="#/" style="color:inherit;text-decoration:none;">Trang Chủ</a> / ${isShopCatalog ? 'Dịch Vụ' : 'Liệu Trình'}</div>
+      <div class="breadcrumbs"><a href="/" style="color:inherit;text-decoration:none;">Trang Chủ</a> / ${isShopCatalog ? 'Dịch Vụ' : 'Liệu Trình'}</div>
       <h1>${isShopCatalog ? 'DANH MỤC DỊCH VỤ' : 'DANH MỤC LIỆU TRÌNH'}</h1>
       <p>${isShopCatalog ? 'Chọn liệu trình hoặc gói trị liệu phù hợp, xem chi tiết và đặt lịch trực tiếp tại Serenity Spa &amp; Wellness.' : 'Khám phá các liệu trình độc lập tại Serenity Spa &amp; Wellness, Quận 1.'}</p>
     </div>
@@ -358,7 +359,7 @@ async function renderFilteredList() {
               ${includedTreatments.length ? `<p class="package-includes-summary"><strong>Gói gồm:</strong> ${includedTreatments.map((item) => esc(item.name)).join(' · ')}</p>` : ''}
               <div class="service-actions">
                 <button type="button" class="view-details-btn" data-modal-id="${esc(service.id)}">Xem Chi Tiết</button>
-                <a href="#/booking?service=${esc(service.id)}&date=${esc(filterState.serviceDate)}" class="btn-primary">${hasHolidaySale ? 'Đặt lịch ưu đãi' : 'Đặt Lịch Ngay'}</a>
+                <a href="/dat-lich?service=${esc(service.id)}&date=${esc(filterState.serviceDate)}" class="btn-primary">${hasHolidaySale ? 'Đặt lịch ưu đãi' : 'Đặt Lịch Ngay'}</a>
               </div>
             </div>
           </div>
@@ -379,7 +380,7 @@ async function renderFilteredList() {
     btn.addEventListener('click', async () => {
       if (!currentUser) {
         showToast('Vui lòng đăng nhập để lưu liệu trình yêu thích!', 'danger');
-        window.location.hash = '#/my-bookings';
+        navigateTo('/lich-cua-toi');
         return;
       }
       const sid = btn.getAttribute('data-fav-id');
