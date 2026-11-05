@@ -37,6 +37,10 @@ function createBookingDraft(user = null) {
   };
 }
 
+export function filterServicesWithEligibleStaff(services, findSpecialists = (serviceId) => staffService.forService(serviceId)) {
+  return services.filter((service) => findSpecialists(service.id).length > 0);
+}
+
 let wizard = createBookingDraft();
 let wizardContext = null;
 let submissionInFlight = false;
@@ -66,6 +70,20 @@ export function renderBookingPage(preSelectedServiceId = null, preDuration = nul
     root.innerHTML = '<section class="section-container"><h2>Chưa có liệu trình để đặt lịch</h2><p>Vui lòng quay lại sau hoặc liên hệ Spa để được tư vấn.</p></section>';
     return;
   }
+  const bookableServices = filterServicesWithEligibleStaff(allServices);
+  if (!bookableServices.length) {
+    root.innerHTML = `
+      <section class="section-container staff-empty-state" role="status">
+        <h3>Đặt lịch trực tuyến tạm thời chưa khả dụng</h3>
+        <p>Hiện chưa có chuyên viên phù hợp để nhận lịch. Vui lòng liên hệ Serenity Spa để được hỗ trợ.</p>
+        <div class="booking-access-actions">
+          <a class="btn-primary" href="#/contact">LIÊN HỆ SERENITY SPA</a>
+          <a class="btn-outline" href="#/services">XEM DỊCH VỤ</a>
+        </div>
+      </section>
+    `;
+    return;
+  }
 
   // Refresh dữ liệu cùng trang giữ bản nháp; đổi trang hoặc tài khoản bắt đầu lịch mới.
   const context = JSON.stringify([currentUser.id, preSelectedServiceId, preDuration, preselectedSlot?.date, preselectedSlot?.time, preselectedSlot?.staffId]);
@@ -76,8 +94,8 @@ export function renderBookingPage(preSelectedServiceId = null, preDuration = nul
     bookingCatalogPages = { therapy: 1, package: 1 };
     bookingCatalogSearch = { therapy: '', package: '' };
     bookingTherapyGroup = 'all';
-    const firstTherapy = allServices.find((service) => getServiceKind(service) === 'therapy') || allServices[0];
-    wizard.serviceId = allServices.some((s) => s.id === preSelectedServiceId) ? preSelectedServiceId : firstTherapy.id;
+    const firstTherapy = bookableServices.find((service) => getServiceKind(service) === 'therapy') || bookableServices[0];
+    wizard.serviceId = bookableServices.some((s) => s.id === preSelectedServiceId) ? preSelectedServiceId : firstTherapy.id;
     const selectedService = serviceService.get(wizard.serviceId);
     bookingCatalogTab = getServiceKind(selectedService);
     const variants = selectedService.variants || [{ duration: selectedService.duration }];
@@ -89,8 +107,8 @@ export function renderBookingPage(preSelectedServiceId = null, preDuration = nul
     wizard.step = wizard.time ? 3 : 1;
   }
 
-  if (!allServices.some((s) => s.id === wizard.serviceId)) {
-    const fallback = allServices.find((service) => getServiceKind(service) === 'therapy') || allServices[0];
+  if (!bookableServices.some((s) => s.id === wizard.serviceId)) {
+    const fallback = bookableServices.find((service) => getServiceKind(service) === 'therapy') || bookableServices[0];
     wizard.serviceId = fallback.id;
     bookingCatalogTab = getServiceKind(fallback);
     wizard.duration = Number(fallback.duration);
@@ -375,6 +393,9 @@ function renderCurrentWizardStep() {
 /* ---------------- BƯỚC 1: CHỌN DỊCH VỤ & THỜI LƯỢNG ---------------- */
 function renderStep1(container) {
   const activeServices = serviceService.listActive();
+  const bookableServices = filterServicesWithEligibleStaff(activeServices);
+  const bookableServiceIds = new Set(bookableServices.map((service) => service.id));
+  const unavailableServiceCount = activeServices.length - bookableServices.length;
   const therapies = activeServices.filter((service) => getServiceKind(service) === 'therapy');
   const packages = activeServices.filter((service) => getServiceKind(service) === 'package');
   const therapyGroupCounts = new Map(THERAPY_GROUPS.map((group) => [group.id,
@@ -383,11 +404,18 @@ function renderStep1(container) {
   const visibleServices = bookingCatalogTab === 'therapy'
     ? (bookingTherapyGroup === 'all' ? therapies : therapies.filter((service) => getTherapyGroupId(service) === bookingTherapyGroup))
     : packages;
-  let currentService = visibleServices.find((service) => service.id === wizard.serviceId);
-  if (!currentService && visibleServices.length) {
-    currentService = visibleServices[0];
+  let currentService = visibleServices.find((service) => service.id === wizard.serviceId && bookableServiceIds.has(service.id));
+  if (!currentService) {
+    currentService = visibleServices.find((service) => bookableServiceIds.has(service.id)) || null;
+  }
+  if (currentService && currentService.id !== wizard.serviceId) {
     wizard.serviceId = currentService.id;
     wizard.duration = Number(currentService.duration);
+    wizard.staffId = null;
+    wizard.time = null;
+    wizard.promoCode = '';
+  } else if (!currentService) {
+    wizard.serviceId = null;
     wizard.staffId = null;
     wizard.time = null;
     wizard.promoCode = '';
@@ -400,6 +428,12 @@ function renderStep1(container) {
     <p style="color: var(--text-light); font-size: 14px; margin-bottom: 20px;">
       Chọn một liệu trình riêng lẻ hoặc một gói combo. Gói được đặt thành một lịch liên tục với một chuyên viên.
     </p>
+    ${unavailableServiceCount ? `
+      <p class="booking-catalog-availability-note" role="status">
+        ${unavailableServiceCount} liệu trình hoặc gói hiện chưa có chuyên viên phù hợp để đặt online.
+        <a href="#/contact">Liên hệ Serenity Spa</a> để được hỗ trợ.
+      </p>
+    ` : ''}
 
     <div class="booking-catalog-tabs" role="tablist" aria-label="Loại hình trị liệu">
       <button type="button" class="booking-catalog-tab ${bookingCatalogTab === 'therapy' ? 'active' : ''}" role="tab" aria-selected="${bookingCatalogTab === 'therapy'}" data-catalog-kind="therapy">
@@ -456,7 +490,7 @@ function renderStep1(container) {
     </div>
   `;
 
-  renderBookingCatalogResults(container, visibleServices, activeServices);
+  renderBookingCatalogResults(container, visibleServices, activeServices, bookableServiceIds);
 
   container.querySelectorAll('[data-catalog-kind]').forEach((button) => {
     button.addEventListener('click', () => {
@@ -467,7 +501,7 @@ function renderStep1(container) {
       const nextServices = nextKind === 'therapy'
         ? (bookingTherapyGroup === 'all' ? therapies : therapies.filter((service) => getTherapyGroupId(service) === bookingTherapyGroup))
         : packages;
-      const nextService = nextServices[0];
+      const nextService = nextServices.find((service) => bookableServiceIds.has(service.id));
       if (nextService) {
         wizard.serviceId = nextService.id;
         wizard.duration = Number(nextService.duration);
@@ -475,6 +509,11 @@ function renderStep1(container) {
         wizard.time = null;
         wizard.promoCode = '';
         scheduleStaffQuery = '';
+      } else {
+        wizard.serviceId = null;
+        wizard.staffId = null;
+        wizard.time = null;
+        wizard.promoCode = '';
       }
       renderStep1(container);
     });
@@ -488,13 +527,14 @@ function renderStep1(container) {
       bookingCatalogPages.therapy = 1;
       const nextServices = nextGroup === 'all' ? therapies
         : therapies.filter((service) => getTherapyGroupId(service) === nextGroup);
-      if (nextServices.length && !nextServices.some((service) => service.id === wizard.serviceId)) {
-        wizard.serviceId = nextServices[0].id;
-        wizard.duration = Number(nextServices[0].duration);
+      const nextBookableServices = nextServices.filter((service) => bookableServiceIds.has(service.id));
+      if (nextBookableServices.length && !nextBookableServices.some((service) => service.id === wizard.serviceId)) {
+        wizard.serviceId = nextBookableServices[0].id;
+        wizard.duration = Number(nextBookableServices[0].duration);
         wizard.staffId = null;
         wizard.time = null;
         wizard.promoCode = '';
-      } else if (!nextServices.length) {
+      } else if (!nextBookableServices.length) {
         wizard.serviceId = null;
         wizard.staffId = null;
         wizard.time = null;
@@ -507,7 +547,7 @@ function renderStep1(container) {
   container.querySelector('#bookingCatalogSearch')?.addEventListener('input', (event) => {
     bookingCatalogSearch[bookingCatalogTab] = event.currentTarget.value.slice(0, 120);
     bookingCatalogPages[bookingCatalogTab] = 1;
-    renderBookingCatalogResults(container, visibleServices, activeServices);
+    renderBookingCatalogResults(container, visibleServices, activeServices, bookableServiceIds);
   });
 
   container.querySelectorAll('.variant-btn').forEach((btn) => {
@@ -528,7 +568,7 @@ function renderStep1(container) {
   });
 }
 
-function renderBookingCatalogResults(container, services, catalog = null) {
+function renderBookingCatalogResults(container, services, catalog = null, bookableServiceIds = null) {
   const grid = container.querySelector('#serviceSelectGrid');
   const count = container.querySelector('#bookingCatalogCount');
   const pagination = container.querySelector('#bookingCatalogPagination');
@@ -552,14 +592,16 @@ function renderBookingCatalogResults(container, services, catalog = null) {
   grid.innerHTML = pageItems.map((service) => {
     const img = getServiceImage(service);
     const isSelected = service.id === wizard.serviceId;
+    const isBookable = bookableServiceIds?.has(service.id) ?? staffService.forService(service.id).length > 0;
     const packageCount = serviceService.componentServices(service, serviceCatalog).length;
     return `
-      <button type="button" class="service-select-item ${isSelected ? 'selected' : ''}" data-svc-id="${esc(service.id)}" aria-pressed="${isSelected}">
+      <button type="button" class="service-select-item ${isSelected ? 'selected' : ''}" data-svc-id="${esc(service.id)}" aria-pressed="${isSelected}" ${isBookable ? '' : 'disabled aria-disabled="true"'}>
         <img src="${esc(img.url)}" alt="" class="service-thumb-sm" loading="lazy" />
         <span class="booking-service-item-copy">
           <span class="booking-service-item-name">${esc(service.name)}</span>
           <span class="booking-service-item-meta">⏱ ${service.duration} Phút · ${salePriceMarkup(getDisplayPricing(service, service.duration, wizard.date))}</span>
           ${bookingCatalogTab === 'package' ? `<span class="booking-service-item-includes">${packageCount} liệu trình thành phần</span>` : ''}
+          ${isBookable ? '' : '<span class="booking-service-item-includes">Chưa có chuyên viên phù hợp</span>'}
         </span>
         <span class="booking-service-radio" aria-hidden="true">${isSelected ? '●' : '○'}</span>
       </button>
@@ -585,7 +627,7 @@ function renderBookingCatalogResults(container, services, catalog = null) {
   grid.querySelectorAll('[data-svc-id]').forEach((item) => {
     item.addEventListener('click', () => {
       const selected = serviceService.get(item.getAttribute('data-svc-id'));
-      if (!selected || getServiceKind(selected) !== bookingCatalogTab) return;
+      if (!selected || !bookableServiceIds?.has(selected.id) || getServiceKind(selected) !== bookingCatalogTab) return;
       wizard.serviceId = selected.id;
       wizard.duration = Number(selected.duration);
       wizard.staffId = null;
@@ -599,7 +641,7 @@ function renderBookingCatalogResults(container, services, catalog = null) {
   pagination.querySelectorAll('[data-catalog-page]').forEach((button) => {
     button.addEventListener('click', () => {
       bookingCatalogPages[bookingCatalogTab] = Number(button.getAttribute('data-catalog-page'));
-      renderBookingCatalogResults(container, services, serviceCatalog);
+      renderBookingCatalogResults(container, services, serviceCatalog, bookableServiceIds);
     });
   });
 }
