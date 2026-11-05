@@ -568,7 +568,7 @@ function renderStep1(container) {
   });
 }
 
-function renderBookingCatalogResults(container, services, catalog = null, bookableServiceIds = null) {
+function renderBookingCatalogResults(container, services, catalog, bookableServiceIds) {
   const grid = container.querySelector('#serviceSelectGrid');
   const count = container.querySelector('#bookingCatalogCount');
   const pagination = container.querySelector('#bookingCatalogPagination');
@@ -592,7 +592,7 @@ function renderBookingCatalogResults(container, services, catalog = null, bookab
   grid.innerHTML = pageItems.map((service) => {
     const img = getServiceImage(service);
     const isSelected = service.id === wizard.serviceId;
-    const isBookable = bookableServiceIds?.has(service.id) ?? staffService.forService(service.id).length > 0;
+    const isBookable = bookableServiceIds.has(service.id);
     const packageCount = serviceService.componentServices(service, serviceCatalog).length;
     return `
       <button type="button" class="service-select-item ${isSelected ? 'selected' : ''}" data-svc-id="${esc(service.id)}" aria-pressed="${isSelected}" ${isBookable ? '' : 'disabled aria-disabled="true"'}>
