@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { onRequest, proxyApiRequest } from '../functions/api/[[path]].js';
 
-const env = { SERENITY_API_ORIGIN: 'https://api.pages.tdt.dev', SERENITY_PROXY_TOKEN: 'local-test-token-that-is-not-a-secret' };
+const env = { SERENITY_API_ORIGIN: 'https://serenityspa-37e2.onweeny.com', SERENITY_PROXY_TOKEN: 'local-test-token-that-is-not-a-secret' };
 
 test('Pages proxy forwards API method, path, query, body, cookie and proxy authentication', async () => {
   const request = new Request('https://serenity.pages.dev/api/bookings?include=payment', {
@@ -17,7 +17,7 @@ test('Pages proxy forwards API method, path, query, body, cookie and proxy authe
     return new Response(JSON.stringify({ ok: true }), { status: 201, headers: { 'content-type': 'application/json' } });
   });
 
-  assert.equal(forwarded.url, 'https://api.pages.tdt.dev/api/bookings?include=payment');
+  assert.equal(forwarded.url, 'https://serenityspa-37e2.onweeny.com/api/bookings?include=payment');
   assert.equal(forwarded.options.method, 'POST');
   assert.equal(forwarded.options.headers.get('cookie'), 'serenity.sid=test-session');
   assert.equal(forwarded.options.headers.get('x-serenity-proxy-token'), env.SERENITY_PROXY_TOKEN);
@@ -56,7 +56,7 @@ test('Pages proxy rejects cross-origin writes, path escapes and arbitrary upstre
   await assert.rejects(() => proxyApiRequest(new Request('https://serenity.pages.dev/api/health'), {
     ...env, SERENITY_API_ORIGIN: 'https://attacker.example',
   }), /fixed HTTPS API origin/);
-  for (const SERENITY_API_ORIGIN of ['http://api.pages.tdt.dev', 'https://api.pages.tdt.dev:444', 'https://user@api.pages.tdt.dev']) {
+  for (const SERENITY_API_ORIGIN of ['http://serenityspa-37e2.onweeny.com', 'https://serenityspa-37e2.onweeny.com:444', 'https://user@serenityspa-37e2.onweeny.com']) {
     await assert.rejects(() => proxyApiRequest(new Request('https://serenity.pages.dev/api/health'), {
       ...env, SERENITY_API_ORIGIN,
     }), /fixed HTTPS API origin/);

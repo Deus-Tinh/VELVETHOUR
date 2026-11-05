@@ -11,6 +11,7 @@ import { contactService } from './services/socialAndAnalyticsService.js';
 import { on } from './core/events.js';
 import { showToast, openServiceModal } from './ui/components.js';
 import { initChatbot } from './ui/chatbotLauncher.js';
+import { initBackgroundMusicPlayer } from './ui/backgroundMusicPlayer.js';
 import { getDisplayPricing, salePriceMarkup } from './ui/salePrice.js';
 import { esc } from './core/utils.js';
 import {
@@ -27,6 +28,7 @@ import { renderAdminDashboardPage } from './pages/adminDashboardPage.js';
 import { renderAuthPage } from './pages/authPage.js';
 import { renderStaffInvitePage } from './pages/staffInvitePage.js';
 import { renderPromotionPage } from './pages/promotionPage.js';
+import { renderMusicManagerPage } from './pages/musicManagerPage.js';
 
 const SERENITY_ADDRESS = '285B Đường Hoàng Sa, Phường Tân Định, Quận 1, TP. Hồ Chí Minh';
 const SERENITY_MAP_QUERY = encodeURIComponent(SERENITY_ADDRESS);
@@ -432,6 +434,7 @@ export function formatVND(amount) {
 
 // KHỞI ĐỘNG HỆ THỐNG ĐIỀU HƯỚNG
 document.addEventListener('DOMContentLoaded', () => {
+  initBackgroundMusicPlayer();
   migrateLegacyHash();
   let routerReady = false;
   installSpaNavigation(() => {
@@ -565,6 +568,9 @@ function handleRoute() {
     case '/admin':
       renderAdminDashboardPage();
       break;
+    case '/nhac':
+      renderMusicManagerPage();
+      break;
     default:
       renderHomePage();
       break;
@@ -595,9 +601,9 @@ function updateActiveNav(pathname = window.location.pathname) {
   if (menubarUl) {
     let extraNavs = '';
     if (user?.role === 'staff') {
-      extraNavs = `<li><a href="/nhan-vien" class="${isActive('/nhan-vien') ? 'active' : ''}">Staff Portal</a></li>`;
+      extraNavs = `<li><a href="/nhan-vien" class="${isActive('/nhan-vien') ? 'active' : ''}">Staff Portal</a></li><li><a href="/nhac" class="${isActive('/nhac') ? 'active' : ''}">Nhạc nền</a></li>`;
     } else if (user?.role === 'admin') {
-      extraNavs = `<li><a href="/admin" class="${isActive('/admin') ? 'active' : ''}">Quản Trị</a></li>`;
+      extraNavs = `<li><a href="/admin" class="${isActive('/admin') ? 'active' : ''}">Quản Trị</a></li><li><a href="/nhac" class="${isActive('/nhac') ? 'active' : ''}">Nhạc nền</a></li>`;
     }
     const defaultRouteKeys = new Set(['home', 'services', 'about', 'contact']);
     const managedNavs = siteMenu.filter((item) => item.enabled && (item.targetType === 'page'

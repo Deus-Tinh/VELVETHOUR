@@ -72,16 +72,21 @@ Khi PostgreSQL adapter đã có, kết nối repository và dùng blueprint `ren
 
 Render Free có thể ngủ sau 15 phút không có request và cold start khoảng một phút; filesystem bị mất khi restart, sleep hoặc redeploy. Điều này làm request đầu chậm và cần tính khi nhận webhook, nhưng mã giữ chỗ 180 giây được tạo sau khi API thức dậy. Chưa có phép thử webhook với Render/SePay thật nên chưa thể cam kết thời gian giao nhận. Xem [giới hạn Render Free](https://render.com/docs/free) và [cách pin Node](https://render.com/docs/node-version).
 
+### Vercel
+
+- `api/[...path].js` chuyển `/api/*` sang backend OnWeeny và thêm `SERENITY_PROXY_TOKEN` ở server; không cần project-level API route staging.
+- `vercel.json` chuyển `/mp3/*` sang OnWeeny để playlist và nhạc nền tải được mà không commit các file MP3 lớn.
+- Cấu hình `SERENITY_PROXY_TOKEN` trong Preview và Production của Vercel, trùng với secret trên backend OnWeeny và dài tối thiểu 32 ký tự. Không commit hoặc gửi token trong chat.
+- `SERENITY_API_ORIGIN` mặc định là `https://serenityspa-37e2.onweeny.com`; nếu khai báo thì phải dùng đúng origin này.
+- Sau khi merge branch đã duyệt, kiểm tra `/api/health` trên Vercel. Khi token chưa được cấu hình, Function trả `503` thay vì `404`.
+
 ### Cloudflare Pages
 
-Tạo Pages project từ GitHub sau khi API đã sẵn sàng:
-
-- Build command: `npm run build:pages`
-- Output directory: `dist`
-- Static routes không gọi Function; chỉ `/api/*` chạy Pages Function theo `_routes.json`.
-- Pages variables: `RENDER_API_ORIGIN` (origin HTTPS `.onrender.com`).
-- Pages secret: `SERENITY_PROXY_TOKEN` (cùng giá trị riêng với Render; tối thiểu 32 ký tự ngẫu nhiên).
-- Không đặt `DATABASE_URL`, SePay key hay Gemini key trong Pages.
+- Build command: `npm run build:pages`; output directory: `dist`.
+- Pages variable: `SERENITY_API_ORIGIN=https://serenityspa-37e2.onweeny.com`.
+- Pages secret: `SERENITY_PROXY_TOKEN`, trùng với secret backend và dài tối thiểu 32 ký tự.
+- `_routes.json` chỉ gọi Function cho `/api` và `/api/*`; assets khác được Pages phục vụ tĩnh.
+- Không đặt database URL, SePay key hay Gemini key trong Pages.
 
 Pages Functions dùng Workers Free quota; hiện tại tài liệu Cloudflare nêu 100.000 request/ngày và 10 ms CPU/request. Chỉ API đi qua Function tính vào quota; assets tĩnh vẫn được Pages phục vụ. Theo dõi usage/429. Xem [Pages routing](https://developers.cloudflare.com/pages/functions/routing/), [bindings/secrets](https://developers.cloudflare.com/pages/functions/bindings/) và [Workers limits](https://developers.cloudflare.com/workers/platform/limits/).
 
@@ -89,7 +94,7 @@ Pages Functions dùng Workers Free quota; hiện tại tài liệu Cloudflare n�
 
 **Render:** `NODE_ENV`, `NODE_VERSION`, `PORT` (Render cấp), `DATABASE_URL`, `SERENITY_PROXY_TOKEN`, `SERENITY_INITIAL_ADMIN_EMAIL`, `SERENITY_INITIAL_ADMIN_PASSWORD`, `SERENITY_INITIAL_ADMIN_NAME`, `SERENITY_API_RATE_LIMIT`, `AI_PROVIDER`, `GEMINI_API_KEY`, `AI_MODEL`, `AI_FALLBACK_MODEL`, `AI_AGENT_REQUEST_TIMEOUT`, `AI_AGENT_TIMEOUT`, `SEPAY_ENABLED=false`.
 
-**Cloudflare Pages Function:** `RENDER_API_ORIGIN`, secret `SERENITY_PROXY_TOKEN`.
+**Vercel / Cloudflare Pages Functions:** `SERENITY_API_ORIGIN`, secret `SERENITY_PROXY_TOKEN`.
 
 Không cần điền `SEPAY_ACCOUNT_NUMBER`, `SEPAY_ACCOUNT_HOLDER`, `SEPAY_WEBHOOK_API_KEY` hoặc bật SePay trong giai đoạn thử triển khai. Chỉ cấu hình các biến đó sau khi người dùng cho phép và xác minh webhook/đối soát trên môi trường an toàn.
 
