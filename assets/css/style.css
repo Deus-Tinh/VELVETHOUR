@@ -2775,10 +2775,10 @@ footer.site-footer {
   opacity: .8;
 }
 
-@media (max-width: 600px) {
+@media (max-width: 768px) {
   .serenity-chat-launcher {
     right: max(15px, env(safe-area-inset-right));
-    bottom: max(15px, env(safe-area-inset-bottom));
+    bottom: calc(82px + env(safe-area-inset-bottom, 0px));
     min-height: 54px;
     padding-right: 15px;
   }

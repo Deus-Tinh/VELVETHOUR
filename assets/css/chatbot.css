@@ -7,6 +7,12 @@
   pointer-events: none;
 }
 
+@media (max-width: 768px) {
+  .serenity-chat-widget {
+    bottom: calc(148px + env(safe-area-inset-bottom, 0px));
+  }
+}
+
 .serenity-chat-panel {
   display: flex;
   width: 100%;
