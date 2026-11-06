@@ -249,13 +249,14 @@ function defaultAccountPasswords(includeDemoData) {
 function initializeDatabase() {
   if (q.meta.get('initialized')?.value === 'yes') return;
   const isProduction = process.env.NODE_ENV === 'production';
+  const isStrictProduction = isProduction && !ALLOW_EPHEMERAL;
   const includeDemoData = !isProduction && String(process.env.SERENITY_SEED_DEMO_DATA || '').toLowerCase() === 'true';
-  const accountPasswords = isProduction ? {} : defaultAccountPasswords(includeDemoData);
+  const accountPasswords = isStrictProduction ? {} : defaultAccountPasswords(includeDemoData);
   storage.useMemory();
   seedIfNeeded({ includeDemoData, accountPasswords });
   transaction(() => {
     for (const [collection, repo] of Object.entries(repos)) {
-      const records = isProduction && (collection === 'users' || collection === 'staff') ? [] : repo.getAll();
+      const records = isStrictProduction && (collection === 'users' || collection === 'staff') ? [] : repo.getAll();
       for (const source of records) {
         let record = { ...source };
         if (collection === 'users') {
@@ -278,7 +279,7 @@ function initializeDatabase() {
 initializeDatabase();
 
 function migrateManagedStaffAndAdminAccounts() {
-  if (process.env.NODE_ENV === 'production') return;
+  if (process.env.NODE_ENV === 'production' && !ALLOW_EPHEMERAL) return;
   const migrationKey = 'managed_staff_admin_default_password_v1';
   if (q.meta.get(migrationKey)?.value === '1') return;
 
