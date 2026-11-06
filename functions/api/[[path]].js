@@ -11,10 +11,9 @@ function configuredOrigin(env) {
   const localDevelopment = env.ENVIRONMENT === 'development'
     && ['localhost', '127.0.0.1'].includes(target.hostname);
   if ((!localDevelopment && target.protocol !== 'https:')
-    || (!localDevelopment && target.hostname !== 'serenityspa-37e2.onweeny.com')
     || (!localDevelopment && target.port)
     || target.username || target.password || target.pathname !== '/' || target.search || target.hash) {
-    throw new Error('SERENITY_API_ORIGIN must be the fixed HTTPS API origin https://serenityspa-37e2.onweeny.com.');
+    throw new Error('SERENITY_API_ORIGIN must be a valid HTTPS API origin without port or path.');
   }
   return target.origin;
 }

@@ -1,10 +1,8 @@
 import { proxyApiRequest } from '../functions/api/[[path]].js';
 
-const API_ORIGIN = 'https://serenityspa-37e2.onweeny.com';
-
 async function proxyRequest(request) {
   const env = {
-    SERENITY_API_ORIGIN: process.env.SERENITY_API_ORIGIN || API_ORIGIN,
+    SERENITY_API_ORIGIN: process.env.SERENITY_API_ORIGIN || '',
     SERENITY_PROXY_TOKEN: process.env.SERENITY_PROXY_TOKEN,
   };
 
