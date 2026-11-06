@@ -15,6 +15,7 @@
     { "source": "/dang-ky", "destination": "/index.html" },
     { "source": "/quen-mat-khau", "destination": "/index.html" },
     { "source": "/moi-nhan-vien", "destination": "/index.html" },
-    { "source": "/uu-dai/:slug", "destination": "/index.html" }
+    { "source": "/uu-dai/:slug", "destination": "/index.html" },
+    { "source": "/api/:path*", "destination": "/api/proxy?__serenity_path=:path*" }
   ]
 }
