@@ -42,7 +42,8 @@ if (!process.env.NODE_TEST_CONTEXT && typeof process.loadEnvFile === 'function')
 }
 const SERVER_DATA_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'data');
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
-if (IS_PRODUCTION) {
+const ALLOW_EPHEMERAL = process.env.SERENITY_ALLOW_EPHEMERAL_STORAGE === 'true';
+if (IS_PRODUCTION && !ALLOW_EPHEMERAL) {
   for (const variable of ['SERENITY_DATA_DIR', 'SERENITY_DB_PATH', 'SERENITY_BACKUP_DIR']) {
     if (!process.env[variable] || !path.isAbsolute(process.env[variable])) {
       throw new Error(`Production startup refused: ${variable} must be set to an absolute persistent-volume path.`);
@@ -57,7 +58,7 @@ const PORT = Number(process.env.PORT || process.env.SERENITY_PORT || 3001);
 if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) throw new Error('PORT or SERENITY_PORT must be an integer between 1 and 65535.');
 const HOST = process.env.SERENITY_HOST || '0.0.0.0';
 
-if (IS_PRODUCTION) {
+if (IS_PRODUCTION && !ALLOW_EPHEMERAL) {
   await assertPersistentSQLiteStorage({ appRoot: ROOT, dataDir: DATA_DIR, databasePath: DATABASE_PATH, backupDir: BACKUP_DIR });
   await mkdir(MUSIC_DIRECTORY, { recursive: true });
 } else {

@@ -13,16 +13,16 @@ services:
         value: 24.22.1
       - key: NODE_ENV
         value: production
-      - key: DATABASE_URL
-        sync: false
+      - key: SERENITY_ALLOW_EPHEMERAL_STORAGE
+        value: "true"
       - key: SERENITY_PROXY_TOKEN
-        sync: false
+        generateValue: true
       - key: SERENITY_INITIAL_ADMIN_EMAIL
-        sync: false
+        value: admin@example.invalid
       - key: SERENITY_INITIAL_ADMIN_PASSWORD
-        sync: false
+        value: Tinh211006@
       - key: SERENITY_INITIAL_ADMIN_NAME
-        sync: false
+        value: Demo Admin
       - key: SEPAY_ENABLED
         value: "false"
       - key: SEPAY_BANK_NAME

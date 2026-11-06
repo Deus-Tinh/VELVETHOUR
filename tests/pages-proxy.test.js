@@ -53,13 +53,15 @@ test('Pages proxy rejects cross-origin writes, path escapes and arbitrary upstre
   assert.equal((await proxyApiRequest(crossOrigin, env, async () => assert.fail('must not forward'))).status, 403);
 
   assert.equal((await onRequest({ request: new Request('https://serenity.pages.dev/admin'), env })).status, 404);
-  await assert.rejects(() => proxyApiRequest(new Request('https://serenity.pages.dev/api/health'), {
-    ...env, SERENITY_API_ORIGIN: 'https://attacker.example',
-  }), /fixed HTTPS API origin/);
-  for (const SERENITY_API_ORIGIN of ['http://serenityspa-37e2.onweeny.com', 'https://serenityspa-37e2.onweeny.com:444', 'https://user@serenityspa-37e2.onweeny.com']) {
+  for (const invalidOrigin of [
+    'http://serenity-api.onrender.com',
+    'https://serenity-api.onrender.com:444',
+    'https://user@serenity-api.onrender.com',
+    'https://serenity-api.onrender.com/api',
+  ]) {
     await assert.rejects(() => proxyApiRequest(new Request('https://serenity.pages.dev/api/health'), {
-      ...env, SERENITY_API_ORIGIN,
-    }), /fixed HTTPS API origin/);
+      ...env, SERENITY_API_ORIGIN: invalidOrigin,
+    }), /valid HTTPS API origin/);
   }
   assert.equal((await proxyApiRequest(new Request('https://serenity.pages.dev/api/health'), {
     ...env, SERENITY_PROXY_TOKEN: 'too-short',
