@@ -65,6 +65,7 @@ export function renderAdminDashboardPage() {
     <div class="section-container" style="padding-top: 35px; padding-bottom: 70px;">
       <!-- Backup shared data; reset remains limited to the offline demo. -->
       <div style="display: flex; justify-content: flex-end; gap: 10px; flex-wrap: wrap; margin-bottom: 20px;">
+        <a href="/nhac" class="btn-outline btn-sm" style="text-decoration: none;">♫ Quản Lý Nhạc Nền</a>
         <button type="button" class="btn-outline btn-sm" id="adminChangePasswordBtn">🔑 Đổi Mật Khẩu</button>
         <button type="button" class="btn-outline btn-sm" id="adminLogoutBtn">Đăng Xuất</button>
         ${apiClient.isOnline() ? `<button type="button" class="btn-outline btn-sm" id="downloadBackupBtn">⬇ Tải bản sao lưu dữ liệu</button>` : `<button type="button" class="btn-outline btn-sm" id="resetDemoBtn" style="color: #dc2626; border-color: #dc2626;">

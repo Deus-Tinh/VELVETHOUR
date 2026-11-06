@@ -180,3 +180,127 @@ test('Forgot password sends 6-digit OTP email and resets password with valid OTP
   assert.equal(loginAfterReset.status, 200);
   assert.equal(loginAfterReset.body.user.staffId, 'st-03');
 });
+
+test('End-to-end virtual email account + real TCP SMTP server receives 6-digit OTP and resets password', async () => {
+  setMailTransportForTests(null);
+  const net = await import('node:net');
+
+  const receivedRawMessages = [];
+  const smtpServer = net.createServer((socket) => {
+    let inDataMode = false;
+    let dataBuffer = '';
+    let authStep = 0;
+    socket.write('220 virtual-mail.local ESMTP Ready\r\n');
+
+    let lineBuffer = '';
+    socket.on('data', (chunk) => {
+      lineBuffer += chunk.toString('utf8');
+      while (true) {
+        const idx = lineBuffer.indexOf('\r\n');
+        if (idx === -1) break;
+        const line = lineBuffer.slice(0, idx);
+        lineBuffer = lineBuffer.slice(idx + 2);
+
+        if (inDataMode) {
+          if (line === '.') {
+            inDataMode = false;
+            receivedRawMessages.push(dataBuffer);
+            dataBuffer = '';
+            socket.write('250 2.0.0 OK: queued as VIRTUAL-OTP-01\r\n');
+          } else {
+            dataBuffer += `${line}\n`;
+          }
+          continue;
+        }
+
+        if (/^EHLO\b/i.test(line)) {
+          socket.write('250-virtual-mail.local\r\n250 AUTH LOGIN\r\n');
+        } else if (/^AUTH LOGIN$/i.test(line)) {
+          authStep = 1;
+          socket.write('334 VXNlcm5hbWU6\r\n');
+        } else if (authStep === 1) {
+          authStep = 2;
+          socket.write('334 UGFzc3dvcmQ6\r\n');
+        } else if (authStep === 2) {
+          authStep = 0;
+          socket.write('235 2.7.0 Authentication successful\r\n');
+        } else if (/^MAIL FROM:/i.test(line)) {
+          socket.write('250 2.1.0 Ok\r\n');
+        } else if (/^RCPT TO:/i.test(line)) {
+          socket.write('250 2.1.5 Ok\r\n');
+        } else if (/^DATA$/i.test(line)) {
+          inDataMode = true;
+          socket.write('354 End data with <CR><LF>.<CR><LF>\r\n');
+        } else if (/^QUIT$/i.test(line)) {
+          socket.write('221 2.0.0 Bye\r\n');
+          socket.end();
+        } else {
+          socket.write('250 OK\r\n');
+        }
+      }
+    });
+  });
+
+  await new Promise((resolve) => smtpServer.listen(0, '127.0.0.1', resolve));
+  const smtpPort = smtpServer.address().port;
+
+  process.env.SMTP_HOST = '127.0.0.1';
+  process.env.SMTP_PORT = String(smtpPort);
+  process.env.SMTP_SECURE = 'false';
+  process.env.SMTP_ALLOW_PLAINTEXT = 'true';
+  process.env.SMTP_USER = 'virtual-mailer@serenityspa.local';
+  process.env.SMTP_PASS = 'VirtualSmtpPass2026@';
+  process.env.SMTP_FROM = 'Serenity Spa <virtual-mailer@serenityspa.local>';
+
+  try {
+    // 1. Tạo tài khoản khách hàng bằng email ảo
+    const virtualEmail = 'khach.ao.otp@virtual-mail.test';
+    const registerRes = await request('POST', '/api/auth/register', {
+      name: 'Khách Mail Ảo',
+      phone: '0978123456',
+      email: virtualEmail,
+      password: 'OldVirtualPass1@',
+    });
+    assert.equal(registerRes.status, 201);
+    assert.equal(registerRes.body.user.email, virtualEmail);
+
+    // 2. Gửi yêu cầu Quên mật khẩu -> Server kết nối tới cổng TCP SMTP thật để gửi mail
+    const otpReqRes = await request('POST', '/api/auth/forgot-password/request', {
+      email: virtualEmail,
+    });
+    assert.equal(otpReqRes.status, 200);
+    assert.equal(otpReqRes.body.ok, true);
+    assert.equal(receivedRawMessages.length, 1, 'Virtual SMTP server must receive 1 MIME email');
+
+    // 3. Giải mã nội dung MIME base64 từ hòm thư ảo để lấy mã OTP 6 chữ số
+    const rawMime = receivedRawMessages[0];
+    const base64Blocks = [...rawMime.matchAll(/Content-Transfer-Encoding: base64\n\n([A-Za-z0-9+/=]+)/g)];
+    assert.ok(base64Blocks.length >= 1, 'MIME payload contains base64 body');
+    const decodedPlainText = Buffer.from(base64Blocks[0][1], 'base64').toString('utf8');
+    const otpMatch = decodedPlainText.match(/\b(\d{6})\b/);
+    assert.ok(otpMatch, 'Decoded email from virtual inbox must contain 6-digit OTP');
+    const otpCode = otpMatch[1];
+
+    // 4. Đặt lại mật khẩu mới bằng mã OTP vừa nhận từ mail ảo
+    const newVirtualPass = 'NewVirtualPass2026@';
+    const resetRes = await request('POST', '/api/auth/forgot-password/reset', {
+      email: virtualEmail,
+      otp: otpCode,
+      newPassword: newVirtualPass,
+      confirmPassword: newVirtualPass,
+    });
+    assert.equal(resetRes.status, 200);
+    assert.equal(resetRes.body.ok, true);
+
+    // 5. Đăng nhập lại với mật khẩu mới
+    const loginNewRes = await request('POST', '/api/auth/login', {
+      email: virtualEmail,
+      password: newVirtualPass,
+    });
+    assert.equal(loginNewRes.status, 200);
+    assert.equal(loginNewRes.body.user.email, virtualEmail);
+  } finally {
+    await new Promise((resolve) => smtpServer.close(resolve));
+  }
+});
+

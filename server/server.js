@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import { createReadStream } from 'node:fs';
-import { mkdir, stat } from 'node:fs/promises';
+import { mkdir, open, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
@@ -32,6 +32,7 @@ import {
   recommendServices, redactChatText, requestAiCriteria,
 } from './chatbot.js';
 import { isStrongPassword, schemas, validate } from '../assets/js/core/validators.js';
+import { buildMusicManifest } from './musicLibrary.js';
 import { assertPersistentSQLiteStorage } from './persistentStorage.js';
 import { assertSqliteIntegrity, createSqliteBackup } from './sqliteMaintenance.js';
 
@@ -47,6 +48,7 @@ if (IS_PRODUCTION) {
 }
 const DATA_DIR = path.resolve(process.env.SERENITY_DATA_DIR || SERVER_DATA_DIR);
 const BACKUP_DIR = path.resolve(process.env.SERENITY_BACKUP_DIR || path.join(DATA_DIR, 'backups'));
+const MUSIC_DIRECTORY = path.resolve(process.env.SERENITY_MUSIC_DIR || path.join(DATA_DIR, 'music'));
 const DATABASE_PATH = path.resolve(process.env.SERENITY_DB_PATH || path.join(DATA_DIR, 'serenity.sqlite'));
 const PORT = Number(process.env.PORT || process.env.SERENITY_PORT || 3001);
 if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) throw new Error('PORT or SERENITY_PORT must be an integer between 1 and 65535.');
@@ -54,9 +56,11 @@ const HOST = process.env.SERENITY_HOST || '0.0.0.0';
 
 if (IS_PRODUCTION) {
   await assertPersistentSQLiteStorage({ appRoot: ROOT, dataDir: DATA_DIR, databasePath: DATABASE_PATH, backupDir: BACKUP_DIR });
+  await mkdir(MUSIC_DIRECTORY, { recursive: true });
 } else {
   await mkdir(DATA_DIR, { recursive: true });
   await mkdir(BACKUP_DIR, { recursive: true });
+  await mkdir(MUSIC_DIRECTORY, { recursive: true });
 }
 
 const API_RATE_LIMIT = apiRateLimitFromEnv();
@@ -68,7 +72,7 @@ const STATUSES = new Set(['Pending', 'Confirmed', 'CheckedIn', 'Completed', 'Can
 const ADMIN_COLLECTIONS = new Set(['categories', 'services', 'staff', 'promotions', 'settings']);
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
-  '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg',
+  '.json': 'application/json; charset=utf-8', '.mp3': 'audio/mpeg', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.avif': 'image/avif', '.ico': 'image/x-icon', '.woff2': 'font/woff2',
 };
 
@@ -887,6 +891,75 @@ function hasImageSignature(bytes, mimeType) {
   if (mimeType === 'image/png') return bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
   if (mimeType === 'image/webp') return bytes.length >= 12 && bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP';
   return false;
+}
+async function readMusicBody(request, limit = 25 * 1024 * 1024) {
+  const chunks = [];
+  let size = 0;
+  let tooLarge = false;
+  for await (const chunk of request) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += bytes.length;
+    if (size > limit) {
+      tooLarge = true;
+      continue;
+    }
+    if (!tooLarge) chunks.push(bytes);
+  }
+  if (tooLarge) throw new HttpError(413, 'Tệp nhạc vượt quá giới hạn 25 MB.', 'MUSIC_FILE_TOO_LARGE');
+  if (!size) throw new HttpError(400, 'Tệp nhạc đang trống.', 'MUSIC_FILE_EMPTY');
+  return Buffer.concat(chunks, size);
+}
+function hasMp3Signature(bytes) {
+  if (bytes.length < 4) return false;
+  if (bytes.toString('ascii', 0, 3) === 'ID3') return true;
+  return bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0 && (bytes[1] & 0x18) !== 0x08 && (bytes[1] & 0x06) !== 0;
+}
+function readMusicJson(key, fallback) {
+  const raw = q.meta.get(key)?.value;
+  if (!raw) return fallback;
+  try { return JSON.parse(raw); } catch { return fallback; }
+}
+async function getMusicLibrary() {
+  let bundled = [];
+  try {
+    bundled = buildMusicManifest(path.join(ROOT, 'mp3')).tracks.map((track) => ({
+      id: track.id,
+      title: track.title,
+      filename: track.filename,
+      url: `/mp3/${encodeURIComponent(track.filename)}`,
+      source: 'bundled',
+    }));
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+
+  const uploadedRecords = readMusicJson('music_uploaded_tracks_v1', []);
+  const uploaded = [];
+  for (const track of Array.isArray(uploadedRecords) ? uploadedRecords : []) {
+    if (!track || typeof track.id !== 'string' || typeof track.storageName !== 'string') continue;
+    const file = path.resolve(MUSIC_DIRECTORY, track.storageName);
+    if (!file.startsWith(`${MUSIC_DIRECTORY}${path.sep}`)) continue;
+    const info = await stat(file).catch(() => null);
+    if (!info?.isFile()) continue;
+    uploaded.push({
+      id: track.id,
+      title: typeof track.title === 'string' && track.title.trim() ? track.title.trim() : track.id,
+      filename: typeof track.originalName === 'string' ? track.originalName : track.storageName,
+      url: `/api/music/files/${encodeURIComponent(track.id)}`,
+      source: 'uploaded',
+      sizeBytes: Number(track.sizeBytes) || info.size,
+      createdAt: track.createdAt || null,
+    });
+  }
+
+  const tracks = [...bundled, ...uploaded];
+  const validIds = new Set(tracks.map((track) => track.id));
+  const savedPlaylist = readMusicJson('music_playlist_ids_v1', null);
+  const playlistIds = Array.isArray(savedPlaylist)
+    ? savedPlaylist.filter((id, index, list) => typeof id === 'string' && validIds.has(id) && list.indexOf(id) === index)
+    : tracks.map((track) => track.id);
+  const revision = Number(q.meta.get('music_playlist_revision_v1')?.value) || 0;
+  return { tracks, playlistIds, revision };
 }
 function assertOrigin(request) {
   const origin = request.headers.origin;
@@ -1737,6 +1810,104 @@ async function routeApi(request, response, url) {
     });
     await backupIfDue();
     return respond(response, 201, { imageUrl: `/api/therapy-images/${id}` });
+  }
+  if (method === 'GET' && pathname === '/api/music') {
+    return respond(response, 200, await getMusicLibrary());
+  }
+  const uploadedMusicId = pathname.match(/^\/api\/music\/files\/(upload-[0-9a-f-]{36})$/i)?.[1];
+  if ((method === 'GET' || method === 'HEAD') && uploadedMusicId) {
+    const uploaded = readMusicJson('music_uploaded_tracks_v1', []);
+    const track = (Array.isArray(uploaded) ? uploaded : []).find((item) => item?.id === uploadedMusicId);
+    const file = track?.storageName ? path.resolve(MUSIC_DIRECTORY, track.storageName) : null;
+    const fileInfo = file && file.startsWith(`${MUSIC_DIRECTORY}${path.sep}`) ? await stat(file).catch(() => null) : null;
+    if (!fileInfo?.isFile()) throw new HttpError(404, 'Không tìm thấy tệp nhạc.', 'MUSIC_FILE_NOT_FOUND');
+    return serveAudioFile(request, response, file, fileInfo);
+  }
+  if (method === 'POST' && pathname === '/api/music/import') {
+    assertOrigin(request);
+    const actor = requireActor(request, ['admin', 'staff']);
+    const mimeType = String(request.headers['content-type'] || '').split(';', 1)[0].trim().toLowerCase();
+    if (!['audio/mpeg', 'audio/mp3', 'application/octet-stream'].includes(mimeType)) {
+      throw new HttpError(415, 'Chỉ hỗ trợ tệp MP3.', 'MUSIC_FILE_TYPE_INVALID');
+    }
+    let filename = '';
+    try { filename = decodeURIComponent(String(request.headers['x-music-filename'] || '')).trim(); }
+    catch { filename = ''; }
+    const baseName = path.basename(filename).replace(/[\u0000-\u001f\u007f]/g, '').trim();
+    if (!baseName || !/\.mp3$/i.test(baseName)) throw new HttpError(400, 'Tệp tải lên phải có đuôi .mp3.', 'MUSIC_FILENAME_INVALID');
+    const bytes = await readMusicBody(request);
+    if (!hasMp3Signature(bytes)) throw new HttpError(400, 'Nội dung tệp không phải MP3 hợp lệ.', 'MUSIC_FILE_INVALID');
+    const id = `upload-${randomUUID()}`;
+    const storageName = `${id}.mp3`;
+    const targetFile = path.join(MUSIC_DIRECTORY, storageName);
+    const tempFile = `${targetFile}.${randomUUID()}.tmp`;
+    await writeFile(tempFile, bytes);
+    let handle;
+    try {
+      handle = await open(tempFile, 'r+');
+      await handle.sync();
+    } finally {
+      await handle?.close();
+    }
+    await rename(tempFile, targetFile);
+    const title = baseName.replace(/\.mp3$/i, '').trim() || id;
+    const createdAt = new Date().toISOString();
+    const record = { id, title, originalName: baseName, storageName, sizeBytes: bytes.length, createdAt, uploadedBy: actor.id };
+    try {
+      transaction(() => {
+        const uploaded = readMusicJson('music_uploaded_tracks_v1', []);
+        const nextUploaded = [...(Array.isArray(uploaded) ? uploaded : []), record];
+        q.setMeta.run('music_uploaded_tracks_v1', JSON.stringify(nextUploaded));
+        withAudit(actor, 'music.imported', null, { trackId: id, title, sizeBytes: bytes.length });
+      });
+    } catch (error) {
+      await unlink(targetFile).catch(() => {});
+      throw error;
+    }
+    await backupIfDue();
+    return respond(response, 201, {
+      track: {
+        id,
+        title,
+        filename: baseName,
+        url: `/api/music/files/${id}`,
+        source: 'uploaded',
+        sizeBytes: bytes.length,
+        createdAt,
+      },
+    });
+  }
+  if (method === 'PUT' && pathname === '/api/music/playlist') {
+    assertOrigin(request);
+    const actor = requireActor(request, ['admin', 'staff']);
+    const body = await readBody(request, 64 * 1024);
+    if (!Array.isArray(body.trackIds) || body.trackIds.length > 500 || body.trackIds.some((id) => typeof id !== 'string')) {
+      throw new HttpError(400, 'Danh sách bài hát không hợp lệ.', 'MUSIC_PLAYLIST_INVALID');
+    }
+    const expected = Number(request.headers['if-match']);
+    const library = await getMusicLibrary();
+    if (!Number.isInteger(expected) || expected !== library.revision) {
+      throw new HttpError(409, 'Danh sách phát vừa được cập nhật ở thiết bị khác.', 'MUSIC_PLAYLIST_CONFLICT');
+    }
+    const validIds = new Set(library.tracks.map((track) => track.id));
+    const playlistIds = [];
+    for (const id of body.trackIds) {
+      if (!validIds.has(id)) throw new HttpError(400, 'Danh sách phát có bài hát không tồn tại.', 'MUSIC_TRACK_NOT_FOUND');
+      if (!playlistIds.includes(id)) playlistIds.push(id);
+    }
+    let revision = library.revision;
+    transaction(() => {
+      const currentRevision = Number(q.meta.get('music_playlist_revision_v1')?.value) || 0;
+      if (expected !== currentRevision) {
+        throw new HttpError(409, 'Danh sách phát vừa được cập nhật ở thiết bị khác.', 'MUSIC_PLAYLIST_CONFLICT');
+      }
+      revision = currentRevision + 1;
+      q.setMeta.run('music_playlist_ids_v1', JSON.stringify(playlistIds));
+      q.setMeta.run('music_playlist_revision_v1', String(revision));
+      withAudit(actor, 'music.playlist.updated', null, { count: playlistIds.length, revision });
+    });
+    await backupIfDue();
+    return respond(response, 200, { playlistIds, revision });
   }
   if (method === 'GET' && pathname === '/api/services') {
     try {
@@ -2693,6 +2864,41 @@ async function routeApi(request, response, url) {
   throw new HttpError(404, 'Không tìm thấy API.', 'NOT_FOUND');
 }
 
+function serveAudioFile(request, response, file, fileInfo) {
+  const total = fileInfo.size;
+  const headers = {
+    'Content-Type': 'audio/mpeg',
+    'Accept-Ranges': 'bytes',
+    'Cache-Control': 'public, max-age=86400',
+    'X-Content-Type-Options': 'nosniff',
+  };
+  const range = String(request.headers.range || '');
+  if (range.startsWith('bytes=')) {
+    const match = range.match(/^bytes=(\d*)-(\d*)$/);
+    if (!match || (!match[1] && !match[2])) {
+      response.writeHead(416, { ...headers, 'Content-Range': `bytes */${total}` }).end();
+      return;
+    }
+    const start = match[1] ? Number(match[1]) : Math.max(0, total - Number(match[2]));
+    const end = match[1] && match[2] ? Math.min(total - 1, Number(match[2])) : total - 1;
+    if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || start >= total || end < start) {
+      response.writeHead(416, { ...headers, 'Content-Range': `bytes */${total}` }).end();
+      return;
+    }
+    response.writeHead(206, {
+      ...headers,
+      'Content-Range': `bytes ${start}-${end}/${total}`,
+      'Content-Length': String(end - start + 1),
+    });
+    if (request.method === 'HEAD') return response.end();
+    createReadStream(file, { start, end }).on('error', (error) => response.destroy(error)).pipe(response);
+    return;
+  }
+  response.writeHead(200, { ...headers, 'Content-Length': String(total) });
+  if (request.method === 'HEAD') return response.end();
+  createReadStream(file).on('error', (error) => response.destroy(error)).pipe(response);
+}
+
 async function serveStatic(request, response, url) {
   const file = resolvePublicAsset(url.pathname, ROOT);
   const fileInfo = file ? await stat(file).catch((error) => {
@@ -2701,7 +2907,8 @@ async function serveStatic(request, response, url) {
   }) : null;
   if (!fileInfo?.isFile()) { response.writeHead(404).end('Not Found'); return; }
   const extension = path.extname(file).toLowerCase();
-  response.writeHead(200, { 'Content-Type': MIME[extension] || 'application/octet-stream', 'Cache-Control': ['.html', '.js', '.css'].includes(extension) ? 'no-cache' : 'public, max-age=3600' });
+  if (extension === '.mp3') return serveAudioFile(request, response, file, fileInfo);
+  response.writeHead(200, { 'Content-Type': MIME[extension] || 'application/octet-stream', 'Cache-Control': ['.html', '.js', '.css', '.json'].includes(extension) ? 'no-cache' : 'public, max-age=3600' });
   if (request.method === 'HEAD') return response.end();
   createReadStream(file).on('error', (error) => response.destroy(error)).pipe(response);
 }
@@ -2730,7 +2937,7 @@ export const server = createServer(HTTP_SERVER_OPTIONS, async (request, response
       if (!isAllowedOrigin(origin, request)) return respond(response, 403, { error: 'Nguồn gửi yêu cầu không được cho phép.', code: 'ORIGIN_REJECTED' });
       response.setHeader('Access-Control-Allow-Origin', origin);
       response.setHeader('Access-Control-Allow-Credentials', 'true');
-      response.setHeader('Access-Control-Allow-Headers', 'Content-Type, If-Match');
+      response.setHeader('Access-Control-Allow-Headers', 'Content-Type, If-Match, X-Music-Filename');
       response.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, PUT, DELETE, OPTIONS');
       response.setHeader('Vary', 'Origin');
     }

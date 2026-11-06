@@ -53,6 +53,7 @@ export function renderStaffDashboardPage() {
     <div class="section-container" style="padding-top: 35px; padding-bottom: 70px;">
       <!-- Thanh thao tác tài khoản chuyên viên -->
       <div style="display: flex; justify-content: flex-end; gap: 10px; margin-bottom: 20px; flex-wrap: wrap;">
+        <a href="/nhac" class="btn-outline btn-sm" style="text-decoration: none;">♫ Quản Lý Nhạc Nền</a>
         <button type="button" class="btn-outline btn-sm" id="staffChangePasswordBtn">🔑 Đổi Mật Khẩu</button>
         <button type="button" class="btn-outline btn-sm" id="staffLogoutBtn">Đăng Xuất</button>
       </div>

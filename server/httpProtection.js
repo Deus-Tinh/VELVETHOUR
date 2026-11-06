@@ -72,7 +72,7 @@ export function resolvePublicAsset(encodedPathname, root) {
   if (pathname.includes('\\') || pathname.split('/').some((segment) => segment.startsWith('.')) || pathname.includes('\0')) return null;
   if (pathname === '/') pathname = '/index.html';
   else if (isSpaPath(pathname)) pathname = '/index.html';
-  if (pathname !== '/index.html' && !pathname.startsWith('/assets/') && !pathname.startsWith('/tests/')) return null;
+  if (pathname !== '/index.html' && !pathname.startsWith('/assets/') && !pathname.startsWith('/mp3/') && !pathname.startsWith('/tests/')) return null;
   const file = path.resolve(root, `.${pathname}`);
   return file.startsWith(`${root}${path.sep}`) ? file : null;
 }

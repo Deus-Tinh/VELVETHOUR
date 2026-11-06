@@ -12,11 +12,12 @@ export function smtpConfigFromEnv(env = process.env) {
   const port = Number(env.SMTP_PORT || 465);
   const secureRaw = String(env.SMTP_SECURE ?? '').trim().toLowerCase();
   const secure = secureRaw ? secureRaw === 'true' || secureRaw === '1' : port === 465;
+  const allowPlaintext = String(env.SMTP_ALLOW_PLAINTEXT ?? '').trim().toLowerCase() === 'true';
   const user = String(env.SMTP_USER || '').trim();
   const pass = String(env.SMTP_PASS || '');
   const from = String(env.SMTP_FROM || user || 'Serenity Spa <no-reply@serenityspa.local>').trim();
   const timeoutMs = Number(env.SMTP_TIMEOUT_MS || 15000);
-  return { host, port, secure, user, pass, from, timeoutMs };
+  return { host, port, secure, allowPlaintext, user, pass, from, timeoutMs };
 }
 
 export function isSmtpConfigured(env = process.env) {
@@ -145,7 +146,7 @@ export async function sendSmtpMail({ to, subject, text, html }, env = process.en
 
     await sendCommand(socket, reader, 'EHLO serenityspa.local', [2]);
 
-    if (!cfg.secure) {
+    if (!cfg.secure && !cfg.allowPlaintext) {
       await sendCommand(socket, reader, 'STARTTLS', [2]);
       reader.detach();
       socket = await new Promise((resolve, reject) => {
