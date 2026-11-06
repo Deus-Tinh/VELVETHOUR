@@ -206,7 +206,7 @@ test('43. Same time is allowed for another staff member and after cancelling an 
 });
 
 test('45. Exact 30-minute lead is accepted; earlier, closed-date and too-far bookings are rejected', async () => {
-  await withFrozenTime('2026-11-02T02:29:00.000Z', async (setTime) => {
+  await withFrozenTime('2026-11-02T02:31:00.000Z', async (setTime) => {
     const date = '2026-11-02';
     const tooSoon = await request('POST', '/api/bookings', bookingBody(date, { submissionKey: randomUUID(), startTime: '10:00' }), customer.cookie);
     assert.equal(tooSoon.status, 400);
@@ -348,5 +348,7 @@ test('52. Promotion reservation increments once, expires after 180 seconds and b
 after(async () => {
   await new Promise((resolve) => server.close(resolve));
   database.close();
-  await rm(temporaryDirectory, { recursive: true, force: true });
+  // The server module keeps its SQLite handle open for the process lifetime; Windows cannot unlink it.
+  await rm(temporaryDirectory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    .catch((error) => { if (process.platform !== 'win32' || !['EBUSY', 'EPERM'].includes(error.code)) throw error; });
 });
