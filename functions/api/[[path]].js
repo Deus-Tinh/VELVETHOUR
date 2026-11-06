@@ -56,7 +56,8 @@ export async function proxyApiRequest(request, env, fetcher = fetch) {
   });
   const responseHeaders = new Headers();
   for (const [name, value] of response.headers) {
-    if (name.toLowerCase() === 'set-cookie' || HOP_BY_HOP_HEADERS.has(name.toLowerCase())) continue;
+    const lower = name.toLowerCase();
+    if (lower === 'set-cookie' || lower === 'content-encoding' || lower === 'content-length' || HOP_BY_HOP_HEADERS.has(lower)) continue;
     responseHeaders.append(name, value);
   }
   const cookies = response.headers.getSetCookie?.() || [];
