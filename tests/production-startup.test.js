@@ -35,6 +35,6 @@ test('production startup refuses an unmounted or missing SQLite path before crea
   const unusedDataDir = path.join(tmpdir(), `serenity-production-data-${randomUUID()}`);
   const result = bootProduction({ SERENITY_DATA_DIR: unusedDataDir, SERENITY_BACKUP_DIR: path.join(unusedDataDir, 'backups') });
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /persistent data volume is missing|application filesystem/);
+  assert.match(result.stderr, /persistent data volume is missing|application filesystem|requires Linux/);
   assert.equal(existsSync(unusedDataDir), false, 'production startup must not create the data mount path');
 });

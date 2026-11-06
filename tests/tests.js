@@ -24,10 +24,14 @@ export async function runAllTests() {
     if (!condition) throw new Error(message || 'Assertion failed');
   }
   function assertOfflineBookingRequiresServer(payload) {
+    // createBooking checks the signed-in actor before the offline guard, so sign in as a customer first.
+    authService.login({ email: 'khach@example.invalid', password: TEST_PASSWORDS.customer });
     let error;
-    try { bookingService.createBooking(payload); } catch (caught) { error = caught; }
+    try { bookingService.createBooking(payload); } catch (caught) { error = caught; } finally {
+      authService.login({ email: 'admin@example.invalid', password: TEST_PASSWORDS.admin });
+    }
     assert(error?.code === 'PAYMENT_SERVER_REQUIRED',
-      'Offline booking must be rejected; pending payment and slot holds are created only by the API server.');
+      `Offline booking must be rejected; pending payment and slot holds are created only by the API server. Got: ${error?.code}`);
   }
 
   // Khởi tạo bộ nhớ tạm để test độc lập
@@ -679,7 +683,7 @@ export async function runAllTests() {
       expect(authService.getCurrentUser().id).toBe('usr_cust1');
       expect(() => authService.updateProfile('usr_cust2', { name: 'TEST_Hijack' })).toThrow();
       const original = userRepo.getById('usr_cust1');
-      authService.updateProfile(original.id, { name: 'TEST_Profile' });
+      authService.updateProfile(original.id, { name: 'TEST_Profile', phone: '0987654321' });
       expect(authService.getCurrentUser().name).toBe('TEST_Profile');
       userRepo.update(original.id, { name: original.name });
     } finally { authService.logout(); }

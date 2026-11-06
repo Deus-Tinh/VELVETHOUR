@@ -245,8 +245,9 @@ export function createPaymentOperations({ db, getRecord, parseRows, saveRecord, 
       // prevents two near-simultaneous transfers from both seeing "unpaid" and
       // incorrectly treating the second transfer as the payment that confirms it.
       const bookings = parseRows('bookings');
+      const suppliedCode = String(payload.code || '').trim().toUpperCase();
       const matchedBooking = bookings.find((booking) => codeInText(content, booking.paymentCode)
-        || String(payload.code || '').trim().toUpperCase() === String(booking.paymentCode || '').toUpperCase()) || null;
+        || (suppliedCode !== '' && suppliedCode === String(booking.paymentCode || '').toUpperCase())) || null;
       const paymentCode = matchedBooking?.paymentCode || String(payload.code || '').trim().toUpperCase().slice(0, 80) || null;
       let status = 'unmatched';
       let reason = 'Không tìm thấy mã thanh toán chính xác trong nội dung giao dịch.';

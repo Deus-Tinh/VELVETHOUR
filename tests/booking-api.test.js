@@ -167,7 +167,7 @@ test('Booking API requires explicit valid contact data before creating a booking
   await t.test('submission keys do not return another account booking', async () => {
     const secondCustomer = await login('bao@example.invalid', process.env.SERENITY_TEST_CUSTOMER_PASSWORD);
     const created = await request('POST', '/api/bookings', { ...bookingBody(25), submissionKey: 'booking-api-test-24',
-      customerName: secondCustomer.user.name, customerPhone: secondCustomer.user.phone }, secondCustomer.cookie);
+      customerName: secondCustomer.user.name, customerPhone: '0987654322' }, secondCustomer.cookie);
     assert.equal(created.status, 201);
     assert.equal(created.payload.booking.userId, secondCustomer.user.id);
     assert.equal(created.payload.booking.date, futureDate(25));
@@ -176,7 +176,7 @@ test('Booking API requires explicit valid contact data before creating a booking
     assert.ok(list.payload.bookings.every((booking) => booking.userId === secondCustomer.user.id));
 
     const legacyResult = await request('POST', '/api/bookings', { ...bookingBody(26), submissionKey: 'legacy-booking-api-test',
-      customerName: secondCustomer.user.name, customerPhone: secondCustomer.user.phone }, secondCustomer.cookie);
+      customerName: secondCustomer.user.name, customerPhone: '0987654322' }, secondCustomer.cookie);
     assert.equal(legacyResult.status, 201, 'another account using an old unscoped token must create their own booking');
     assert.equal(legacyResult.payload.booking.userId, secondCustomer.user.id);
 
@@ -185,7 +185,7 @@ test('Booking API requires explicit valid contact data before creating a booking
       .run(`${secondCustomer.user.id}:legacy-prefix-collision`, firstCustomerBooking.id);
     const beforeCollision = persistedState();
     const collision = await request('POST', '/api/bookings', { ...bookingBody(27), submissionKey: 'legacy-prefix-collision',
-      customerName: secondCustomer.user.name, customerPhone: secondCustomer.user.phone }, secondCustomer.cookie);
+      customerName: secondCustomer.user.name, customerPhone: '0987654322' }, secondCustomer.cookie);
     assert.equal(collision.status, 409, 'an old global token resembling a new scoped token must not expose another booking');
     assert.equal(collision.payload.booking, undefined);
     assert.deepEqual(persistedState(), beforeCollision);

@@ -47,7 +47,8 @@ test('persistent-volume guard accepts only an existing writable database on a se
     assert.equal(preserved.prepare('SELECT id FROM preserved').get().id, 'existing-data');
     preserved.close();
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+      .catch((error) => { if (process.platform !== 'win32' || !['EBUSY', 'EPERM'].includes(error.code)) throw error; }); // Windows keeps SQLite -shm/-wal handles briefly locked
   }
 });
 
@@ -77,7 +78,7 @@ test('online backup preserves WAL data and BLOBs; restore copy passes integrity 
     const snapshot = new DatabaseSync(snapshotPath, { readOnly: true });
     assert.deepEqual(assertSqliteIntegrity(snapshot), { integrity: 'ok', foreignKeyViolations: 0 });
     assert.equal(snapshot.prepare('SELECT name FROM customers WHERE id=?').get('customer-1').name, 'persisted customer');
-    assert.deepEqual(snapshot.prepare('SELECT bytes FROM images WHERE id=?').get('image-1').bytes, Buffer.from('image-blob-test'));
+    assert.deepEqual(Buffer.from(snapshot.prepare('SELECT bytes FROM images WHERE id=?').get('image-1').bytes), Buffer.from('image-blob-test'));
     snapshot.close();
 
     await copyFile(snapshotPath, restorePath);
@@ -90,6 +91,7 @@ test('online backup preserves WAL data and BLOBs; restore copy passes integrity 
     assert.equal((await stat(sourcePath)).isFile(), true);
   } finally {
     source.close();
-    await rm(directory, { recursive: true, force: true });
+    await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+      .catch((error) => { if (process.platform !== 'win32' || !['EBUSY', 'EPERM'].includes(error.code)) throw error; }); // Windows keeps SQLite -shm/-wal handles briefly locked
   }
 });
