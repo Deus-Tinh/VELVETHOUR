@@ -68,14 +68,15 @@ test('static allowlist denies secrets, internal sources, encoded dotfiles and Wi
   for (const pathname of ['/api/health', '/unknown', '/.env']) assert.equal(resolvePublicAsset(pathname, root), null, pathname);
 });
 
-test('Vercel rewrites app paths to index without rewriting API requests', async () => {
+test('Vercel rewrites app paths to index and every API path to the single proxy function', async () => {
   const config = JSON.parse(await readFile(new URL('../vercel.json', import.meta.url), 'utf8'));
   const sources = config.rewrites.map((rewrite) => rewrite.source);
   for (const route of ['/dich-vu', '/lieu-trinh', '/dat-lich', '/ve-chung-toi', '/lien-he', '/lich-cua-toi',
     '/admin', '/nhan-vien', '/dang-nhap', '/dang-ky', '/moi-nhan-vien', '/dich-vu/:serviceId', '/uu-dai/:slug']) {
     assert.ok(sources.includes(route), `Missing Vercel SPA rewrite for ${route}`);
   }
-  assert.ok(sources.every((source) => !source.startsWith('/api')), 'API proxy paths must remain untouched');
+  const apiRewrites = config.rewrites.filter((rewrite) => rewrite.source.startsWith('/api'));
+  assert.deepEqual(apiRewrites, [{ source: '/api/:path*', destination: '/api/proxy?__serenity_path=:path*' }]);
 });
 
 const directory = await mkdtemp(path.join(tmpdir(), 'serenity-http-protection-'));

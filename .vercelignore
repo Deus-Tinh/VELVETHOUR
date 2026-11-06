@@ -1,0 +1,40 @@
+# =====================================================================
+# .vercelignore — Vercel deployment allowlist / blocklist
+# Vercel serves everything NOT listed here as a static asset.
+# We only need: index.html, assets/, mp3/, api/proxy.js, functions/
+# Everything else (server code, tests, docs, secrets) must be blocked.
+# =====================================================================
+
+# --- Server-side source (never public) ---
+server/
+scripts/
+tools/
+
+# --- Test suite ---
+tests/
+
+# --- Documentation / internal files ---
+docs/
+AGENTS.md
+CONTEXT.md
+render.yaml
+
+# --- Secrets and environment files ---
+.env
+.env.*
+*.env
+
+# --- SQLite database files ---
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+*.db
+
+# --- Node.js internals ---
+node_modules/
+
+# --- Build / editor artifacts ---
+.git/
+.github/
+*.log
