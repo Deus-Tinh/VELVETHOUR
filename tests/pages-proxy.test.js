@@ -67,3 +67,35 @@ test('Pages proxy rejects cross-origin writes, path escapes and arbitrary upstre
     ...env, SERENITY_PROXY_TOKEN: 'too-short',
   })).status, 503);
 });
+
+test('Pages proxy extracts x-real-ip as x-serenity-client-ip when cf-connecting-ip is absent (Vercel edge)', async () => {
+  const request = new Request('https://serenity.pages.dev/api/chat/session', {
+    headers: { origin: 'https://serenity.pages.dev', 'x-real-ip': '203.0.113.55' },
+  });
+  let forwarded;
+  await proxyApiRequest(request, env, async (url, options) => {
+    forwarded = options;
+    return new Response('{}', { status: 200 });
+  });
+  assert.equal(forwarded.headers.get('x-serenity-client-ip'), '203.0.113.55', 'x-real-ip used as client IP');
+  assert.equal(forwarded.headers.get('x-real-ip'), null, 'x-real-ip must be stripped from upstream');
+});
+
+test('Pages proxy uses first x-forwarded-for entry and strips it from upstream', async () => {
+  const request = new Request('https://serenity.pages.dev/api/auth/login', {
+    method: 'POST', body: '{}',
+    headers: {
+      origin: 'https://serenity.pages.dev',
+      'content-type': 'application/json',
+      'x-forwarded-for': '203.0.113.1, 10.0.0.1, 10.0.0.2',
+    },
+  });
+  let forwarded;
+  await proxyApiRequest(request, env, async (url, options) => {
+    forwarded = options;
+    return new Response('{}', { status: 200 });
+  });
+  assert.equal(forwarded.headers.get('x-serenity-client-ip'), '203.0.113.1', 'first XFF entry used');
+  assert.equal(forwarded.headers.get('x-forwarded-for'), null, 'x-forwarded-for stripped from upstream');
+});
+

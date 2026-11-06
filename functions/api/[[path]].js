@@ -36,7 +36,7 @@ export async function proxyApiRequest(request, env, fetcher = fetch) {
   for (const [name, value] of request.headers) {
     const lowerName = name.toLowerCase();
     if (HOP_BY_HOP_HEADERS.has(lowerName) || ['host', 'content-length', 'origin', 'x-forwarded-host',
-      'cf-connecting-ip', 'x-serenity-client-ip'].includes(lowerName)) continue;
+      'cf-connecting-ip', 'x-real-ip', 'x-forwarded-for', 'x-serenity-client-ip'].includes(lowerName)) continue;
     headers.append(name, value);
   }
   const publicOrigin = request.headers.get('origin');
@@ -45,7 +45,14 @@ export async function proxyApiRequest(request, env, fetcher = fetch) {
     headers.set('x-forwarded-host', incoming.host);
   }
   headers.set('x-serenity-proxy-token', proxyToken);
-  const edgeClientIp = request.headers.get('cf-connecting-ip');
+  // Resolve the real client IP: Cloudflare sets cf-connecting-ip; Vercel sets x-real-ip;
+  // fall back to the first entry in x-forwarded-for. Stripping x-real-ip and x-forwarded-for
+  // from the outgoing copy (done above) prevents any client spoofing.
+  const edgeClientIp =
+    request.headers.get('cf-connecting-ip') ||
+    request.headers.get('x-real-ip') ||
+    (request.headers.get('x-forwarded-for') || '').split(',')[0].trim() ||
+    null;
   if (edgeClientIp) headers.set('x-serenity-client-ip', edgeClientIp);
 
   const response = await fetcher(upstreamUrl, {
