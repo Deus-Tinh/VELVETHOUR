@@ -1,0 +1,79 @@
+{
+  "tracks": [
+    {
+      "id": "track-01",
+      "title": "KEEP MOVING",
+      "filename": "KEEP MOVING.mp3"
+    },
+    {
+      "id": "track-02",
+      "title": "MẤT LA BÀN",
+      "filename": "MẤT LA BÀN.mp3"
+    },
+    {
+      "id": "track-03",
+      "title": "XOAY VÒNG",
+      "filename": "XOAY VÒNG.mp3"
+    },
+    {
+      "id": "track-04",
+      "title": "50 CUỘC GỌI NHỠ",
+      "filename": "50 CUỘC GỌI NHỠ.mp3"
+    },
+    {
+      "id": "track-05",
+      "title": "TRỄ GIỜ CƠM",
+      "filename": "TRỄ GIỜ CƠM.mp3"
+    },
+    {
+      "id": "track-06",
+      "title": "THÊU HOA DỆT GẤM",
+      "filename": "THÊU HOA DỆT GẤM.mp3"
+    },
+    {
+      "id": "track-07",
+      "title": "THẾ GIỚI CỦA ANH",
+      "filename": "THẾ GIỚI CỦA ANH.mp3"
+    },
+    {
+      "id": "track-08",
+      "title": "GIẢI CỨU THẾ GIỚI (Version 2)",
+      "filename": "GIẢI CỨU THẾ GIỚI (Version 2).mp3"
+    },
+    {
+      "id": "track-09",
+      "title": "MRT (feat. Xuân Định K.Y, buitruonglinh, CAPTAIN BOY & HYO)",
+      "filename": "MRT (feat. Xuân Định K.Y, buitruonglinh, CAPTAIN BOY & HYO).mp3"
+    },
+    {
+      "id": "track-10",
+      "title": "SECRET (feat. Quang Hùng MasterD, CODYNAMVO, CONGB & Wren Evans)",
+      "filename": "SECRET (feat. Quang Hùng MasterD, CODYNAMVO, CONGB & Wren Evans).mp3"
+    },
+    {
+      "id": "track-11",
+      "title": "LAVIEM",
+      "filename": "LAVIEM.mp3"
+    },
+    {
+      "id": "track-12",
+      "title": "chờ chút...",
+      "filename": "chờ chút....mp3"
+    },
+    {
+      "id": "track-13",
+      "title": "MOVE ON",
+      "filename": "MOVE ON.mp3"
+    },
+    {
+      "id": "track-14",
+      "title": "Hôn Lễ Của Em",
+      "filename": "Hôn Lễ Của Em.mp3"
+    },
+    {
+      "id": "track-15",
+      "title": "Đừng Làm Trái Tim Anh Đau",
+      "filename": "Đừng Làm Trái Tim Anh Đau.mp3"
+    }
+  ]
+}

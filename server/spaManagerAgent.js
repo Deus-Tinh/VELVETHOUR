@@ -332,7 +332,7 @@ async function runToolAgent({ prompt, message, history, tools, executeTool, conf
   const fallbackModel = config.provider === 'gemini'
     ? String(env.AI_AGENT_FALLBACK_MODEL ?? env.AI_FALLBACK_MODEL ?? 'gemini-3.5-flash-lite').trim() : '';
   const canFallback = Boolean(fallbackModel && fallbackModel !== config.model);
-  const transientErrors = new Set(['AI_PROVIDER_UNAVAILABLE', 'AI_PROVIDER_TIMEOUT', 'AI_NETWORK_ERROR', 'AI_RATE_LIMITED']);
+  const transientErrors = new Set(['AI_PROVIDER_UNAVAILABLE', 'AI_PROVIDER_TIMEOUT', 'AI_NETWORK_ERROR', 'AI_RATE_LIMITED', 'AI_MODEL_NOT_FOUND']);
   const messages = [
     { role: 'system', content: prompt },
     ...(history || []).filter((item) => ['user', 'assistant'].includes(item.role) && !item.tool_calls && typeof item.content === 'string')

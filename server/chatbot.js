@@ -469,7 +469,7 @@ export async function requestAiCriteria(message, context, categories, env = proc
         });
         if (!response.ok) {
           const canFailOver = isGemini && index === 0 && models.length > 1
-            && [408, 429, 500, 502, 503, 504].includes(response.status);
+            && [404, 408, 429, 500, 502, 503, 504].includes(response.status);
           if (canFailOver) {
             console.warn(`[chatbot-ai] Gemini model ${activeModel} returned HTTP ${response.status}; trying ${models[index + 1]}.`);
             continue;

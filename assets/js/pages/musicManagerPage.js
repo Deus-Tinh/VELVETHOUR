@@ -51,6 +51,22 @@ function renderLists() {
   root.querySelector('#saveMusicPlaylist').disabled = false;
 }
 
+async function loadFallbackManifest() {
+  const response = await fetch('/mp3/playlist.json', { cache: 'no-cache' });
+  if (!response.ok) throw new Error('Không tải được thư viện nhạc.');
+  const manifest = await response.json();
+  const tracks = (Array.isArray(manifest?.tracks) ? manifest.tracks : [])
+    .filter((track) => track && typeof track.id === 'string' && typeof track.filename === 'string')
+    .map((track) => ({
+      id: track.id,
+      title: typeof track.title === 'string' && track.title.trim() ? track.title.trim() : track.filename.replace(/\.mp3$/i, ''),
+      filename: track.filename,
+      url: `/mp3/${encodeURIComponent(track.filename)}`,
+      source: 'bundled',
+    }));
+  return { tracks, playlistIds: tracks.map((track) => track.id), revision: 0 };
+}
+
 async function loadLibrary() {
   setStatus('Đang tải thư viện nhạc…');
   const importButton = root?.querySelector('#importMusicButton');
@@ -69,7 +85,16 @@ async function loadLibrary() {
     if (fileInput) fileInput.disabled = false;
     setStatus('Danh sách đã đồng bộ với máy chủ.');
   } catch (error) {
-    setStatus(error.message || 'Không tải được thư viện nhạc.', true);
+    try {
+      const fallback = await loadFallbackManifest();
+      libraryTracks = fallback.tracks;
+      playlistIds = fallback.playlistIds;
+      revision = 0;
+      renderLists();
+      setStatus('Đang hiển thị danh sách nhạc mặc định từ thư mục mp3 (chế độ ngoại tuyến).');
+    } catch {
+      setStatus(error.message || 'Không tải được thư viện nhạc.', true);
+    }
   }
 }
 
@@ -118,28 +143,30 @@ export function renderMusicManagerPage() {
   root = document.getElementById('appRoot');
   const user = authService.getCurrentUser();
   if (!user || !['staff', 'admin'].includes(user.role)) {
-    root.innerHTML = `<section class="section-container music-manager-denied"><h1>Quản lý nhạc nền</h1><p>Chỉ tài khoản nhân viên và quản lí mới có thể chỉnh sửa danh sách phát.</p><a class="btn-primary" href="#/login">Đăng nhập tài khoản nhân viên</a></section>`;
+    root.innerHTML = `<section class="section-container music-manager-denied"><h1>Quản lý nhạc nền</h1><p>Chỉ tài khoản nhân viên và quản lí mới có thể chỉnh sửa danh sách phát.</p><a class="btn-primary" href="/dang-nhap">Đăng nhập tài khoản nhân viên</a></section>`;
     return;
   }
 
   root.innerHTML = `
     <section class="section-container music-manager-page">
-      <a class="music-manager-back" href="${user.role === 'admin' ? '#/admin' : '#/staff'}">← Quay lại trang ${user.role === 'admin' ? 'quản trị' : 'nhân viên'}</a>
+      <a class="music-manager-back" href="${user.role === 'admin' ? '/admin' : '/nhan-vien'}">← Quay lại trang ${user.role === 'admin' ? 'quản trị' : 'nhân viên'}</a>
       <header class="music-manager-heading"><span>ÂM THANH KHÔNG GIAN</span><h1>Quản lý nhạc nền</h1><p>Danh sách phát được chia sẻ cho khách truy cập. Khi hết một bài, web tự chuyển sang bài kế tiếp.</p></header>
       <section class="music-import-card" aria-labelledby="musicImportTitle">
-        <div><h2 id="musicImportTitle">Nhập thêm nhạc</h2><p>Chọn một hoặc nhiều tệp MP3, tối đa 25 MB mỗi tệp.</p></div>
+        <div class="music-import-copy"><h2 id="musicImportTitle">Nhập thêm nhạc</h2><p>Chọn một hoặc nhiều tệp MP3, tối đa 25 MB mỗi tệp.</p></div>
         <div class="music-import-actions"><label class="music-file-picker" for="musicFileInput">Chọn tệp MP3</label><input id="musicFileInput" type="file" accept="audio/mpeg,.mp3" multiple disabled /><button type="button" class="btn-primary" id="importMusicButton" disabled>Nhập vào thư viện</button></div>
       </section>
       <p id="musicManagerStatus" class="music-manager-status" role="status" aria-live="polite">Đang tải thư viện nhạc…</p>
-      <section class="music-list-card" aria-labelledby="musicPlaylistTitle">
-        <div class="music-list-heading"><div><span class="music-section-kicker">ĐANG PHÁT CHO KHÁCH</span><h2 id="musicPlaylistTitle">Danh sách phát</h2></div><span class="music-count" id="musicPlaylistCount">0 bài</span></div>
-        <ol id="musicPlaylist" class="music-playlist"></ol>
-        <div class="music-save-row"><small>Thứ tự mới chỉ áp dụng sau khi lưu.</small><button type="button" class="btn-primary" id="saveMusicPlaylist" disabled>Lưu danh sách</button></div>
-      </section>
-      <section class="music-list-card music-library-card" aria-labelledby="musicLibraryTitle">
-        <div class="music-list-heading"><div><span class="music-section-kicker">TẤT CẢ TỆP</span><h2 id="musicLibraryTitle">Thư viện nhạc</h2></div><span class="music-count" id="musicLibraryCount">0 bài</span></div>
-        <ul id="musicLibrary" class="music-library"></ul>
-      </section>
+      <div class="music-lists-grid">
+        <section class="music-list-card" aria-labelledby="musicPlaylistTitle">
+          <div class="music-list-heading"><div><span class="music-section-kicker">ĐANG PHÁT CHO KHÁCH</span><h2 id="musicPlaylistTitle">Danh sách phát</h2></div><span class="music-count" id="musicPlaylistCount">0 bài</span></div>
+          <ol id="musicPlaylist" class="music-playlist"></ol>
+          <div class="music-save-row"><small>Thứ tự mới chỉ áp dụng sau khi lưu.</small><button type="button" class="btn-primary" id="saveMusicPlaylist" disabled>Lưu danh sách</button></div>
+        </section>
+        <section class="music-list-card music-library-card" aria-labelledby="musicLibraryTitle">
+          <div class="music-list-heading"><div><span class="music-section-kicker">TẤT CẢ TỆP</span><h2 id="musicLibraryTitle">Thư viện nhạc</h2></div><span class="music-count" id="musicLibraryCount">0 bài</span></div>
+          <ul id="musicLibrary" class="music-library"></ul>
+        </section>
+      </div>
     </section>`;
 
   root.querySelector('#musicFileInput').addEventListener('change', (event) => importFiles(event.target.files));

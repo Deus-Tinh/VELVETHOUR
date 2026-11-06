@@ -80,6 +80,14 @@ img {
   padding: 80px 20px;
 }
 
+.section-container {
+  width: min(100%, 1200px);
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 60px 20px;
+  box-sizing: border-box;
+}
+
 .section-title-center {
   text-align: center;
   margin-bottom: 60px;
