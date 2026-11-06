@@ -37,6 +37,9 @@ import { assertPersistentSQLiteStorage } from './persistentStorage.js';
 import { assertSqliteIntegrity, createSqliteBackup } from './sqliteMaintenance.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+if (!process.env.NODE_TEST_CONTEXT && typeof process.loadEnvFile === 'function') {
+  try { process.loadEnvFile(path.join(ROOT, '.env')); } catch {}
+}
 const SERVER_DATA_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'data');
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 if (IS_PRODUCTION) {
