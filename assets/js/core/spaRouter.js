@@ -15,6 +15,7 @@ const LEGACY_ROUTE_PATHS = new Map([
   ['/music', '/nhac'],
   ['/login', '/dang-nhap'],
   ['/register', '/dang-ky'],
+  ['/forgot-password', '/quen-mat-khau'],
 ]);
 
 const ROUTE_TITLES = new Map([
@@ -30,6 +31,7 @@ const ROUTE_TITLES = new Map([
   ['/nhac', 'Nhạc Nền | Serenity Spa'],
   ['/dang-nhap', 'Đăng Nhập | Serenity Spa'],
   ['/dang-ky', 'Đăng Ký | Serenity Spa'],
+  ['/quen-mat-khau', 'Quên Mật Khẩu | Serenity Spa'],
   ['/moi-nhan-vien', 'Kích Hoạt Tài Khoản | Serenity Spa'],
 ]);
 

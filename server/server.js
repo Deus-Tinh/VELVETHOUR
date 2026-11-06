@@ -4,9 +4,10 @@ import { mkdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
-import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomInt, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
 import { storage } from '../assets/js/core/storage.js';
-import { seedIfNeeded } from '../assets/js/data/seed.js';
+import { DEFAULT_MANAGED_USERS, DEFAULT_STAFF_ADMIN_PASSWORD, seedIfNeeded } from '../assets/js/data/seed.js';
+import { sendPasswordResetOtpEmail } from './mailer.js';
 import { ADDITIONAL_PACKAGE_SEED_IDS, ADDITIONAL_THERAPY_SEED_IDS, SERVICES_SEED } from '../assets/js/data/servicesSeed.js';
 import { repos } from '../assets/js/data/repositories.js';
 import { bookingLockEndMinute, formatVND } from '../assets/js/core/utils.js';
@@ -94,6 +95,14 @@ db.exec(`
     staff_id TEXT PRIMARY KEY, email TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE,
     created_by TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL, accepted_at TEXT
   );
+  CREATE TABLE IF NOT EXISTS password_reset_otps (
+    email TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    otp_hash TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    expires_at INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+  );
   CREATE TABLE IF NOT EXISTS booking_dedupe (token TEXT PRIMARY KEY, booking_id TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS audit_log (
     id TEXT PRIMARY KEY, actor_id TEXT, actor_role TEXT, action TEXT NOT NULL,
@@ -133,7 +142,15 @@ const q = {
   sessionByHash: db.prepare('SELECT user_id, expires_at FROM sessions WHERE token_hash = ?'),
   insertSession: db.prepare('INSERT INTO sessions(token_hash, user_id, expires_at) VALUES (?, ?, ?)'),
   deleteSession: db.prepare('DELETE FROM sessions WHERE token_hash = ?'),
+  deleteUserSessions: db.prepare('DELETE FROM sessions WHERE user_id = ?'),
   deleteExpiredSessions: db.prepare('DELETE FROM sessions WHERE expires_at <= ?'),
+  passwordResetOtpByEmail: db.prepare('SELECT * FROM password_reset_otps WHERE email = ?'),
+  upsertPasswordResetOtp: db.prepare(`INSERT INTO password_reset_otps(email, user_id, otp_hash, attempts, expires_at, created_at)
+    VALUES (?, ?, ?, 0, ?, ?) ON CONFLICT(email) DO UPDATE SET user_id = excluded.user_id, otp_hash = excluded.otp_hash,
+    attempts = 0, expires_at = excluded.expires_at, created_at = excluded.created_at`),
+  incrementPasswordResetOtpAttempts: db.prepare('UPDATE password_reset_otps SET attempts = attempts + 1 WHERE email = ?'),
+  deletePasswordResetOtp: db.prepare('DELETE FROM password_reset_otps WHERE email = ?'),
+  deleteExpiredPasswordResetOtps: db.prepare('DELETE FROM password_reset_otps WHERE expires_at <= ?'),
   packageImage: db.prepare('SELECT mime_type, data FROM package_images WHERE id = ?'),
   insertPackageImage: db.prepare('INSERT INTO package_images(id, mime_type, data, created_at) VALUES (?, ?, ?, ?)'),
   therapyImage: db.prepare('SELECT mime_type, data FROM therapy_images WHERE id = ?'),
@@ -160,6 +177,7 @@ const q = {
 };
 
 q.deleteExpiredSessions.run(Date.now());
+q.deleteExpiredPasswordResetOtps.run(Date.now());
 
 function transaction(work) {
   db.exec('BEGIN IMMEDIATE');
@@ -203,28 +221,41 @@ function visibleCustomerRefund(refundRequest) {
   return safeRefundRequest;
 }
 
+function defaultAccountPasswords(includeDemoData) {
+  const adminPassword = process.env.SERENITY_TEST_ADMIN_PASSWORD || DEFAULT_STAFF_ADMIN_PASSWORD;
+  const staffPassword = process.env.SERENITY_TEST_STAFF_PASSWORD || DEFAULT_STAFF_ADMIN_PASSWORD;
+  const passwords = {
+    'admin@example.invalid': adminPassword,
+    'linh@example.invalid': staffPassword,
+    'trang@example.invalid': staffPassword,
+    'vy@example.invalid': staffPassword,
+    'nam@example.invalid': staffPassword,
+  };
+  if (includeDemoData) {
+    passwords['khach@example.invalid'] = process.env.SERENITY_TEST_CUSTOMER_PASSWORD || '';
+    passwords['bao@example.invalid'] = process.env.SERENITY_TEST_CUSTOMER_PASSWORD || '';
+  }
+  return passwords;
+}
+
 function initializeDatabase() {
   if (q.meta.get('initialized')?.value === 'yes') return;
   const isProduction = process.env.NODE_ENV === 'production';
   const includeDemoData = !isProduction && String(process.env.SERENITY_SEED_DEMO_DATA || '').toLowerCase() === 'true';
-  const accountPasswords = includeDemoData ? {
-    'admin@example.invalid': process.env.SERENITY_TEST_ADMIN_PASSWORD || '',
-    'linh@example.invalid': process.env.SERENITY_TEST_STAFF_PASSWORD || '',
-    'trang@example.invalid': process.env.SERENITY_TEST_STAFF_PASSWORD || '',
-    'khach@example.invalid': process.env.SERENITY_TEST_CUSTOMER_PASSWORD || '',
-    'bao@example.invalid': process.env.SERENITY_TEST_CUSTOMER_PASSWORD || '',
-  } : {};
+  const accountPasswords = isProduction ? {} : defaultAccountPasswords(includeDemoData);
   storage.useMemory();
   seedIfNeeded({ includeDemoData, accountPasswords });
   transaction(() => {
     for (const [collection, repo] of Object.entries(repos)) {
-      const records = repo.getAll();
+      const records = isProduction && (collection === 'users' || collection === 'staff') ? [] : repo.getAll();
       for (const source of records) {
         let record = { ...source };
         if (collection === 'users') {
           record.passwordSalt = record.salt || randomBytes(16).toString('hex');
-          if (accountPasswords[record.email]) {
-            record.passwordHash = scryptSync(accountPasswords[record.email], record.passwordSalt, 64).toString('hex');
+          const resolvedPassword = accountPasswords[record.email]
+            || ((record.role === 'admin' || record.role === 'staff') ? DEFAULT_STAFF_ADMIN_PASSWORD : '');
+          if (resolvedPassword) {
+            record.passwordHash = scryptSync(resolvedPassword, record.passwordSalt, 64).toString('hex');
           }
           delete record.salt;
         }
@@ -237,6 +268,56 @@ function initializeDatabase() {
 }
 
 initializeDatabase();
+
+function migrateManagedStaffAndAdminAccounts() {
+  if (process.env.NODE_ENV === 'production') return;
+  const migrationKey = 'managed_staff_admin_default_password_v1';
+  if (q.meta.get(migrationKey)?.value === '1') return;
+
+  storage.useMemory();
+  seedIfNeeded({ includeDemoData: false });
+  const seedStaff = repos.staff.getAll();
+  const passwords = defaultAccountPasswords(false);
+
+  transaction(() => {
+    let staffChanged = 0;
+    for (const member of seedStaff) {
+      if (!getRecord('staff', member.id)) {
+        saveRecord('staff', member);
+        staffChanged += 1;
+      }
+    }
+    if (staffChanged) nextVersion('staff');
+
+    const existingUsers = parseRows('users');
+    for (const managed of DEFAULT_MANAGED_USERS) {
+      const existing = existingUsers.find((u) => u.id === managed.id || u.email?.toLowerCase() === managed.email.toLowerCase());
+      const password = passwords[managed.email] || DEFAULT_STAFF_ADMIN_PASSWORD;
+      const passwordSalt = existing?.passwordSalt || randomBytes(16).toString('hex');
+      const passwordHash = scryptSync(password, passwordSalt, 64).toString('hex');
+      const updated = {
+        ...managed,
+        ...(existing || {}),
+        id: existing?.id || managed.id,
+        name: existing?.name || managed.name,
+        email: managed.email,
+        role: managed.role,
+        ...(managed.staffId ? { staffId: managed.staffId } : {}),
+        active: true,
+        passwordSalt,
+        passwordHash,
+        createdAt: existing?.createdAt || new Date(Date.UTC(2026, 0, 1)).toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      delete updated.salt;
+      saveRecord('users', updated);
+    }
+    nextVersion('users');
+    q.setMeta.run(migrationKey, '1');
+  });
+}
+
+migrateManagedStaffAndAdminAccounts();
 
 function ensureProductionAdmin() {
   if (process.env.NODE_ENV !== 'production') return;
@@ -2137,12 +2218,148 @@ async function routeApi(request, response, url) {
     const actor = requireActor(request);
     const body = await readBody(request);
     const current = getRecord('users', actor.id);
-    const currentHash = scryptSync(String(body.oldPassword || ''), current.passwordSalt, 64).toString('hex');
-    if (!timingSafeEqual(Buffer.from(currentHash, 'hex'), Buffer.from(current.passwordHash, 'hex'))) throw new HttpError(401, 'Mật khẩu hiện tại không chính xác.', 'AUTH_FAILED');
-    if (!isStrongPassword(body.newPassword)) throw new HttpError(400, 'Mật khẩu mới cần tối thiểu 8 ký tự, có ít nhất 1 chữ số và 1 ký tự đặc biệt.', 'VALIDATION');
+    const oldPassword = String(body.oldPassword || '');
+    const newPassword = String(body.newPassword || '');
+    if (!oldPassword) {
+      throw new HttpError(400, 'Vui lòng nhập mật khẩu hiện tại.', 'VALIDATION', { oldPassword: 'Vui lòng nhập mật khẩu hiện tại.' });
+    }
+    const currentHash = scryptSync(oldPassword, current.passwordSalt, 64).toString('hex');
+    if (!timingSafeEqual(Buffer.from(currentHash, 'hex'), Buffer.from(current.passwordHash, 'hex'))) {
+      throw new HttpError(401, 'Mật khẩu hiện tại không chính xác.', 'AUTH_FAILED', { oldPassword: 'Mật khẩu hiện tại không chính xác.' });
+    }
+    if (!isStrongPassword(newPassword)) {
+      throw new HttpError(400, 'Mật khẩu mới cần tối thiểu 8 ký tự, có ít nhất 1 chữ số và 1 ký tự đặc biệt.', 'VALIDATION', {
+        newPassword: 'Mật khẩu mới cần tối thiểu 8 ký tự, có ít nhất 1 chữ số và 1 ký tự đặc biệt.',
+      });
+    }
+    if (body.confirmPassword !== undefined && newPassword !== String(body.confirmPassword || '')) {
+      throw new HttpError(400, 'Mật khẩu xác nhận không khớp.', 'VALIDATION', { confirmPassword: 'Mật khẩu xác nhận không khớp.' });
+    }
+    if (oldPassword === newPassword) {
+      throw new HttpError(400, 'Mật khẩu mới phải khác mật khẩu hiện tại.', 'VALIDATION', { newPassword: 'Mật khẩu mới phải khác mật khẩu hiện tại.' });
+    }
     const salt = randomBytes(16).toString('hex');
-    transaction(() => { saveRecord('users', { ...current, passwordSalt: salt, passwordHash: scryptSync(body.newPassword, salt, 64).toString('hex'), updatedAt: new Date().toISOString() }); });
+    transaction(() => {
+      saveRecord('users', {
+        ...current,
+        passwordSalt: salt,
+        passwordHash: scryptSync(newPassword, salt, 64).toString('hex'),
+        updatedAt: new Date().toISOString(),
+      });
+      nextVersion('users');
+      withAudit(actor, 'auth.password.changed', null, { userId: actor.id });
+    });
     return respond(response, 200, { ok: true });
+  }
+
+  if (method === 'POST' && pathname === '/api/auth/forgot-password/request') {
+    assertOrigin(request);
+    const body = await readBody(request);
+    const email = String(body.email || '').trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) {
+      throw new HttpError(400, 'Vui lòng nhập địa chỉ email hợp lệ.', 'VALIDATION', { email: 'Vui lòng nhập địa chỉ email hợp lệ.' });
+    }
+    q.deleteExpiredPasswordResetOtps.run(Date.now());
+    const user = parseRows('users').find((item) => item.email?.toLowerCase() === email && item.active !== false);
+    if (!user) {
+      throw new HttpError(404, 'Không tìm thấy tài khoản hoạt động với địa chỉ email này.', 'USER_NOT_FOUND', {
+        email: 'Không tìm thấy tài khoản hoạt động với địa chỉ email này.',
+      });
+    }
+    const otp = String(randomInt(100000, 1000000));
+    const otpHash = scryptSync(otp, email, 64).toString('hex');
+    const expiresAt = Date.now() + 10 * 60 * 1000;
+    const createdAt = new Date().toISOString();
+
+    try {
+      await sendPasswordResetOtpEmail({ to: user.email, name: user.name, otp, expiresInMinutes: 10 });
+    } catch (error) {
+      const code = error.code === 'SMTP_NOT_CONFIGURED' ? 'SMTP_NOT_CONFIGURED' : 'SMTP_SEND_FAILED';
+      throw new HttpError(503, error.message || 'Không thể gửi email mã OTP lúc này.', code);
+    }
+
+    transaction(() => {
+      q.upsertPasswordResetOtp.run(email, user.id, otpHash, expiresAt, createdAt);
+      withAudit(user, 'auth.password_reset.otp_sent', null, { email, expiresAt: new Date(expiresAt).toISOString() });
+    });
+
+    return respond(response, 200, {
+      ok: true,
+      email: user.email,
+      expiresInSeconds: 600,
+      message: 'Mã xác thực OTP gồm 6 chữ số đã được gửi tới email của bạn.',
+    });
+  }
+
+  if (method === 'POST' && pathname === '/api/auth/forgot-password/reset') {
+    assertOrigin(request);
+    const body = await readBody(request);
+    const email = String(body.email || '').trim().toLowerCase();
+    const otp = String(body.otp || '').trim();
+    const newPassword = String(body.newPassword || '');
+    const confirmPassword = body.confirmPassword !== undefined ? String(body.confirmPassword || '') : newPassword;
+
+    const fieldErrors = {};
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) fieldErrors.email = 'Vui lòng nhập địa chỉ email hợp lệ.';
+    if (!/^\d{6}$/.test(otp)) fieldErrors.otp = 'Mã OTP phải gồm đúng 6 chữ số.';
+    if (!isStrongPassword(newPassword)) {
+      fieldErrors.newPassword = 'Mật khẩu mới cần tối thiểu 8 ký tự, có ít nhất 1 chữ số và 1 ký tự đặc biệt.';
+    } else if (newPassword !== confirmPassword) {
+      fieldErrors.confirmPassword = 'Mật khẩu xác nhận không khớp.';
+    }
+    if (Object.keys(fieldErrors).length > 0) {
+      throw new HttpError(400, Object.values(fieldErrors)[0], 'VALIDATION', fieldErrors);
+    }
+
+    q.deleteExpiredPasswordResetOtps.run(Date.now());
+    const otpRecord = q.passwordResetOtpByEmail.get(email);
+    if (!otpRecord || otpRecord.expires_at <= Date.now()) {
+      q.deletePasswordResetOtp.run(email);
+      throw new HttpError(400, 'Mã OTP không hợp lệ hoặc đã hết hạn. Vui lòng yêu cầu mã mới.', 'OTP_INVALID', {
+        otp: 'Mã OTP không hợp lệ hoặc đã hết hạn. Vui lòng yêu cầu mã mới.',
+      });
+    }
+    if (Number(otpRecord.attempts) >= 5) {
+      q.deletePasswordResetOtp.run(email);
+      throw new HttpError(429, 'Bạn đã nhập sai mã OTP quá 5 lần. Vui lòng yêu cầu gửi lại mã mới.', 'OTP_MAX_ATTEMPTS', {
+        otp: 'Bạn đã nhập sai mã OTP quá 5 lần. Vui lòng yêu cầu gửi lại mã mới.',
+      });
+    }
+
+    const suppliedHash = scryptSync(otp, email, 64).toString('hex');
+    if (!timingSafeEqual(Buffer.from(suppliedHash, 'hex'), Buffer.from(otpRecord.otp_hash, 'hex'))) {
+      q.incrementPasswordResetOtpAttempts.run(email);
+      throw new HttpError(400, 'Mã xác thực OTP không chính xác.', 'OTP_INVALID', {
+        otp: 'Mã xác thực OTP không chính xác.',
+      });
+    }
+
+    const user = getRecord('users', otpRecord.user_id) || parseRows('users').find((item) => item.email?.toLowerCase() === email);
+    if (!user || user.active === false) {
+      q.deletePasswordResetOtp.run(email);
+      throw new HttpError(404, 'Tài khoản không tồn tại hoặc đã ngừng hoạt động.', 'USER_NOT_FOUND');
+    }
+
+    const salt = randomBytes(16).toString('hex');
+    const now = new Date().toISOString();
+    transaction(() => {
+      saveRecord('users', {
+        ...user,
+        passwordSalt: salt,
+        passwordHash: scryptSync(newPassword, salt, 64).toString('hex'),
+        updatedAt: now,
+      });
+      nextVersion('users');
+      q.deletePasswordResetOtp.run(email);
+      q.deleteUserSessions.run(user.id);
+      withAudit(user, 'auth.password_reset.completed', null, { email });
+    });
+
+    loginAttempts.delete(`${request.socket.remoteAddress || 'local'}:${email}`);
+    return respond(response, 200, {
+      ok: true,
+      message: 'Đặt lại mật khẩu thành công. Vui lòng đăng nhập bằng mật khẩu mới.',
+    });
   }
 
   if (method === 'GET' && pathname === '/api/bookings') {

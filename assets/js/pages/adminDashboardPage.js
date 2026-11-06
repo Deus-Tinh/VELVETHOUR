@@ -23,7 +23,7 @@ import { resetDemoData } from '../data/seed.js';
 import { drawRevenueChart } from '../ui/canvasChart.js';
 import { formatVND, esc, formatDate } from '../core/utils.js';
 import { businessNow, timeToMin } from '../core/utils.js';
-import { showToast, showConfirmModal } from '../ui/components.js';
+import { showToast, showConfirmModal, openChangePasswordModal } from '../ui/components.js';
 import { getImageById, getServiceImage } from '../imageManifest.js';
 import { bookingMessage, customerChannelLinks, rebookingMessage } from '../services/customerMessaging.js';
 import { THERAPY_GROUPS, getTherapyGroupName } from '../domain/therapyGroupModel.js';
@@ -59,12 +59,14 @@ export function renderAdminDashboardPage() {
     <div class="page-banner" style="padding: 35px 20px;">
       <div class="breadcrumbs"><a href="/" style="color:inherit;text-decoration:none;">Trang Chủ</a> / Admin Portal</div>
       <h1 style="font-size: 2.2rem;">HỆ THỐNG QUẢN TRỊ SPA &amp; THỐNG KÊ</h1>
-      <p>Xin chào, <strong>${esc(currentUser.name)}</strong> • Quản lý dịch vụ, chuyên viên và điều phối lịch hẹn.</p>
+      <p>Xin chào, <strong>${esc(currentUser.name)}</strong> (${esc(currentUser.email)}) • Quản lý dịch vụ, chuyên viên và điều phối lịch hẹn.</p>
     </div>
 
     <div class="section-container" style="padding-top: 35px; padding-bottom: 70px;">
       <!-- Backup shared data; reset remains limited to the offline demo. -->
-      <div style="display: flex; justify-content: flex-end; margin-bottom: 20px;">
+      <div style="display: flex; justify-content: flex-end; gap: 10px; flex-wrap: wrap; margin-bottom: 20px;">
+        <button type="button" class="btn-outline btn-sm" id="adminChangePasswordBtn">🔑 Đổi Mật Khẩu</button>
+        <button type="button" class="btn-outline btn-sm" id="adminLogoutBtn">Đăng Xuất</button>
         ${apiClient.isOnline() ? `<button type="button" class="btn-outline btn-sm" id="downloadBackupBtn">⬇ Tải bản sao lưu dữ liệu</button>` : `<button type="button" class="btn-outline btn-sm" id="resetDemoBtn" style="color: #dc2626; border-color: #dc2626;">
           ↺ Khôi Phục Dữ Liệu Demo Ban Đầu
         </button>`}
@@ -120,6 +122,20 @@ export function renderAdminDashboardPage() {
       btn.classList.add('active');
       renderAdminCurrentTab(kpis);
     });
+  });
+
+  document.getElementById('adminChangePasswordBtn')?.addEventListener('click', () => {
+    openChangePasswordModal({
+      user: currentUser,
+      onChangePassword: (uid, oldPass, newPass, confirmPass) =>
+        authService.changePassword(uid, oldPass, newPass, confirmPass),
+    });
+  });
+
+  document.getElementById('adminLogoutBtn')?.addEventListener('click', async () => {
+    await authService.logout();
+    showToast('Đã đăng xuất tài khoản quản trị.', 'normal');
+    renderAdminDashboardPage();
   });
 
   // Sự kiện Khôi phục demo
@@ -1964,8 +1980,42 @@ function renderTabSettings(container) {
       <button type="button" class="btn-primary" id="saveSettingsBtn" style="padding: 12px 30px; margin-top: 15px;">
         Lưu Cài Đặt Hệ Thống
       </button>
+
+      <hr style="border:0;border-top:1px solid var(--border-light);margin:28px 0;" />
+      <h4 style="font-family:var(--font-heading);margin-bottom:14px;color:var(--text-dark);">🔑 Đổi Mật Khẩu Tài Khoản Quản Trị</h4>
+      <div class="form-group">
+        <label for="adminOldPasswordInput">Mật khẩu hiện tại</label>
+        <input type="password" class="form-control" id="adminOldPasswordInput" autocomplete="current-password" />
+      </div>
+      <div class="form-group">
+        <label for="adminNewPasswordInput">Mật khẩu mới</label>
+        <input type="password" class="form-control" id="adminNewPasswordInput" autocomplete="new-password" minlength="8" />
+        <small style="display:block;margin-top:6px;color:#64748b;">Tối thiểu 8 ký tự, gồm ít nhất 1 chữ số và 1 ký tự đặc biệt.</small>
+      </div>
+      <div class="form-group">
+        <label for="adminConfirmPasswordInput">Xác nhận mật khẩu mới</label>
+        <input type="password" class="form-control" id="adminConfirmPasswordInput" autocomplete="new-password" minlength="8" />
+      </div>
+      <button type="button" class="btn-outline" id="adminSavePasswordBtn">Cập Nhật Mật Khẩu Quản Trị</button>
     </div>
   `;
+
+  document.getElementById('adminSavePasswordBtn')?.addEventListener('click', async () => {
+    const currentUser = authService.getCurrentUser();
+    if (!currentUser) return;
+    const oldPass = document.getElementById('adminOldPasswordInput')?.value || '';
+    const newPass = document.getElementById('adminNewPasswordInput')?.value || '';
+    const confirmPass = document.getElementById('adminConfirmPasswordInput')?.value || '';
+    try {
+      await authService.changePassword(currentUser.id, oldPass, newPass, confirmPass);
+      document.getElementById('adminOldPasswordInput').value = '';
+      document.getElementById('adminNewPasswordInput').value = '';
+      document.getElementById('adminConfirmPasswordInput').value = '';
+      showToast('Đã đổi mật khẩu quản trị thành công!', 'success');
+    } catch (err) {
+      showToast(err.message || 'Không thể đổi mật khẩu.', 'danger');
+    }
+  });
 
   document.getElementById('saveSettingsBtn')?.addEventListener('click', () => {
     const spaName = document.getElementById('stSpaName')?.value.trim();

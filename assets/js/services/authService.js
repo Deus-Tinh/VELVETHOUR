@@ -153,19 +153,35 @@ export const authService = {
   },
 
   /** Đổi mật khẩu */
-  changePassword(userId, oldPassword, newPassword) {
+  changePassword(userId, oldPassword, newPassword, confirmPassword) {
     const user = userRepo.getById(userId);
     if (!user) throw new AppError('NOT_FOUND', 'Người dùng không tồn tại.');
     const actor = this.getCurrentUser();
     if (!actor || actor.id !== userId) throw new AppError('UNAUTHORIZED', 'Bạn chỉ có thể đổi mật khẩu của tài khoản đang đăng nhập.');
 
+    if (!oldPassword || String(oldPassword).trim() === '') {
+      throw new AppError('VALIDATION', 'Vui lòng nhập mật khẩu hiện tại.', { oldPassword: 'Vui lòng nhập mật khẩu hiện tại.' });
+    }
     const passwordError = strongPassword()(newPassword);
-    if (passwordError) throw new AppError('VALIDATION', passwordError);
+    if (passwordError) throw new AppError('VALIDATION', passwordError, { newPassword: passwordError });
 
-    if (apiClient.isOnline()) return apiClient.changePassword({ oldPassword, newPassword }).then(() => true);
+    if (confirmPassword !== undefined && String(newPassword) !== String(confirmPassword)) {
+      throw new AppError('VALIDATION', 'Mật khẩu xác nhận không khớp.', { confirmPassword: 'Mật khẩu xác nhận không khớp.' });
+    }
+    if (String(oldPassword) === String(newPassword)) {
+      throw new AppError('VALIDATION', 'Mật khẩu mới phải khác mật khẩu hiện tại.', { newPassword: 'Mật khẩu mới phải khác mật khẩu hiện tại.' });
+    }
+
+    if (apiClient.isOnline()) {
+      return apiClient.changePassword({
+        oldPassword,
+        newPassword,
+        ...(confirmPassword !== undefined ? { confirmPassword } : {}),
+      }).then(() => true);
+    }
 
     if (hashPassword(oldPassword, user.salt) !== user.passwordHash) {
-      throw new AppError('AUTH_FAILED', 'Mật khẩu hiện tại không chính xác.');
+      throw new AppError('AUTH_FAILED', 'Mật khẩu hiện tại không chính xác.', { oldPassword: 'Mật khẩu hiện tại không chính xác.' });
     }
 
     const salt = `salt_${Date.now()}`;
@@ -175,6 +191,55 @@ export const authService = {
     });
 
     return true;
+  },
+
+  /** Yêu cầu gửi mã OTP khôi phục mật khẩu qua email */
+  requestPasswordResetOtp({ email }) {
+    const normalizedEmail = String(email || '').trim().toLowerCase();
+    const { valid, errors } = validate({ email: normalizedEmail }, {
+      email: [required('Vui lòng nhập địa chỉ email'), emailRule('Địa chỉ email không hợp lệ')],
+    });
+    if (!valid) throw new AppError('VALIDATION', errors.email || 'Vui lòng kiểm tra địa chỉ email.', errors);
+
+    if (!apiClient.isOnline()) {
+      throw new AppError('OFFLINE', 'Cần kết nối máy chủ ở cổng 3001 để gửi mã OTP qua email.');
+    }
+
+    return apiClient.requestPasswordResetOtp({ email: normalizedEmail });
+  },
+
+  /** Đặt lại mật khẩu mới bằng mã OTP đã nhận qua email */
+  resetPasswordWithOtp({ email, otp, newPassword, confirmPassword }) {
+    const normalizedEmail = String(email || '').trim().toLowerCase();
+    const normalizedOtp = String(otp || '').trim();
+    const fieldErrors = {};
+
+    const emailError = required('Vui lòng nhập địa chỉ email')(normalizedEmail) || emailRule('Địa chỉ email không hợp lệ')(normalizedEmail);
+    if (emailError) fieldErrors.email = emailError;
+
+    if (!normalizedOtp) fieldErrors.otp = 'Vui lòng nhập mã xác thực OTP.';
+    else if (!/^\d{6}$/.test(normalizedOtp)) fieldErrors.otp = 'Mã OTP phải gồm đúng 6 chữ số.';
+
+    const pwdError = required('Vui lòng nhập mật khẩu mới')(newPassword) || strongPassword()(newPassword);
+    if (pwdError) fieldErrors.newPassword = pwdError;
+    else if (confirmPassword !== undefined && String(newPassword) !== String(confirmPassword)) {
+      fieldErrors.confirmPassword = 'Mật khẩu xác nhận không khớp.';
+    }
+
+    if (Object.keys(fieldErrors).length > 0) {
+      throw new AppError('VALIDATION', Object.values(fieldErrors)[0], fieldErrors);
+    }
+
+    if (!apiClient.isOnline()) {
+      throw new AppError('OFFLINE', 'Cần kết nối máy chủ ở cổng 3001 để đặt lại mật khẩu.');
+    }
+
+    return apiClient.resetPasswordWithOtp({
+      email: normalizedEmail,
+      otp: normalizedOtp,
+      newPassword,
+      confirmPassword: confirmPassword !== undefined ? confirmPassword : newPassword,
+    });
   }
 };
 

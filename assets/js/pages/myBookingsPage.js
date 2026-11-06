@@ -15,7 +15,7 @@ import { apiClient } from '../services/apiClient.js';
 import { staffService } from '../services/staffSettingsPromoService.js';
 import { favoriteService, reviewService } from '../services/socialAndAnalyticsService.js';
 import { formatVND, esc, formatDate, todayStr } from '../core/utils.js';
-import { showToast } from '../ui/components.js';
+import { showToast, openChangePasswordModal } from '../ui/components.js';
 import { renderRescheduleQuote } from '../ui/rescheduleQuote.js';
 import { renderPaymentCheckout } from '../ui/paymentCheckout.js';
 import { bindInvoiceDownloadButtons } from '../ui/invoicePdf.js';
@@ -51,7 +51,8 @@ export function renderMyBookingsPage() {
               <div style="font-size: 13px; color: #64748b;">${esc(currentUser.phone)} • ${esc(currentUser.email)}</div>
             </div>
           </div>
-          <div style="display: flex; gap: 10px;">
+          <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+            <button type="button" class="btn-outline btn-sm" id="custChangePasswordBtn">🔑 Đổi Mật Khẩu</button>
             <button type="button" class="btn-outline btn-sm" id="custLogoutBtn">Đăng Xuất</button>
           </div>
         ` : `
@@ -88,6 +89,14 @@ export function renderMyBookingsPage() {
       <div id="myTabContentArea"></div>
     </div>
   `;
+
+  document.getElementById('custChangePasswordBtn')?.addEventListener('click', () => {
+    openChangePasswordModal({
+      user: currentUser,
+      onChangePassword: (uid, oldPass, newPass, confirmPass) =>
+        authService.changePassword(uid, oldPass, newPass, confirmPass),
+    });
+  });
 
   document.getElementById('custLogoutBtn')?.addEventListener('click', () => {
     authService.logout();
@@ -558,6 +567,10 @@ function renderProfileTab(container, currentUser) {
         <input type="password" class="form-control" id="newPasswordInput" autocomplete="new-password" minlength="8" />
         <small style="display:block;margin-top:6px;color:#64748b;">Ít nhất 8 ký tự, gồm một chữ số và một ký tự đặc biệt.</small>
       </div>
+      <div class="form-group">
+        <label for="confirmNewPasswordInput">Xác nhận mật khẩu mới</label>
+        <input type="password" class="form-control" id="confirmNewPasswordInput" autocomplete="new-password" minlength="8" />
+      </div>
       <button type="button" class="btn-outline" id="changePasswordBtn">Cập Nhật Mật Khẩu</button>
     </div>
   `;
@@ -578,11 +591,13 @@ function renderProfileTab(container, currentUser) {
   document.getElementById('changePasswordBtn')?.addEventListener('click', async () => {
     const currentPassword = document.getElementById('currentPasswordInput')?.value || '';
     const newPassword = document.getElementById('newPasswordInput')?.value || '';
+    const confirmPassword = document.getElementById('confirmNewPasswordInput')?.value || '';
     try {
-      await authService.changePassword(currentUser.id, currentPassword, newPassword);
+      await authService.changePassword(currentUser.id, currentPassword, newPassword, confirmPassword);
       document.getElementById('currentPasswordInput').value = '';
       document.getElementById('newPasswordInput').value = '';
-      showToast('Đã cập nhật mật khẩu.', 'success');
+      document.getElementById('confirmNewPasswordInput').value = '';
+      showToast('Đã cập nhật mật khẩu thành công!', 'success');
     } catch (error) {
       showToast(error.message || 'Không đổi được mật khẩu.', 'danger');
     }
