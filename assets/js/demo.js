@@ -537,9 +537,10 @@ function handleRoute() {
     return;
   }
 
-  if (pathname === '/dang-nhap' || pathname === '/dang-ky') {
+  if (pathname === '/dang-nhap' || pathname === '/dang-ky' || pathname === '/quen-mat-khau') {
     const returnTo = url.searchParams.get('returnTo') === 'booking' ? 'booking' : null;
-    renderAuthPage(pathname === '/dang-ky' ? 'register' : 'login', returnTo);
+    const authMode = pathname === '/dang-ky' ? 'register' : pathname === '/quen-mat-khau' ? 'forgot' : 'login';
+    renderAuthPage(authMode, returnTo);
     return;
   }
 

@@ -364,6 +364,8 @@ export const apiClient = {
   async logout() { try { return await request('/auth/logout', { method: 'POST', body: '{}' }); } finally { currentRole = null; } },
   async updateProfile(profile) { return request('/auth/profile', { method: 'PATCH', body: JSON.stringify(profile) }); },
   async changePassword(credentials) { return request('/auth/change-password', { method: 'POST', body: JSON.stringify(credentials) }); },
+  async requestPasswordResetOtp(payload) { return request('/auth/forgot-password/request', { method: 'POST', body: JSON.stringify(payload) }); },
+  async resetPasswordWithOtp(payload) { return request('/auth/forgot-password/reset', { method: 'POST', body: JSON.stringify(payload) }); },
   async createBooking(payload) { const result = await request('/bookings', { method: 'POST', body: JSON.stringify(payload) }); rememberBooking(result.booking); return result; },
   async getPaymentConfig() { return request('/payment/config'); },
   async getBookingPayment(id) { return request(`/bookings/${encodeURIComponent(id)}/payment`); },

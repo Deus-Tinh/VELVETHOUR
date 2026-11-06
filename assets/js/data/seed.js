@@ -10,10 +10,18 @@ import { todayStr, addDays, minToTime, timeToMin } from '../core/utils.js';
 import { repos } from './repositories.js';
 import { SERVICES_SEED } from './servicesSeed.js';
 
+export const DEFAULT_STAFF_ADMIN_PASSWORD = 'Tinh211006@';
+
+export const DEFAULT_MANAGED_USERS = Object.freeze([
+  { id: 'usr_admin', name: 'Demo Admin', email: 'admin@example.invalid', phone: '', role: 'admin' },
+  { id: 'usr_staff1', name: 'Mai Linh', email: 'linh@example.invalid', phone: '', role: 'staff', staffId: 'st-01' },
+  { id: 'usr_staff2', name: 'Thu Trang', email: 'trang@example.invalid', phone: '', role: 'staff', staffId: 'st-02' },
+  { id: 'usr_staff3', name: 'Khánh Vy', email: 'vy@example.invalid', phone: '', role: 'staff', staffId: 'st-03' },
+  { id: 'usr_staff4', name: 'Hoàng Nam', email: 'nam@example.invalid', phone: '', role: 'staff', staffId: 'st-04' },
+]);
+
 const SEED_USERS = [ // Synthetic demo users only; never store real account data here.
-  { id: 'usr_admin', name: "Demo Admin", email: "admin@example.invalid", phone: "", role: 'admin' },
-  { id: 'usr_staff1', name: "Demo Staff 1", email: "linh@example.invalid", phone: "", role: 'staff', staffId: 'st-01' },
-  { id: 'usr_staff2', name: "Demo Staff 2", email: "trang@example.invalid", phone: "", role: 'staff', staffId: 'st-02' },
+  ...DEFAULT_MANAGED_USERS,
   { id: 'usr_cust1', name: "Demo Customer 1", email: "khach@example.invalid", phone: "", role: 'customer' },
   { id: 'usr_cust2', name: "Demo Customer 2", email: "bao@example.invalid", phone: "", role: 'customer' },
 ];
@@ -68,10 +76,14 @@ function randomSeedSecret() {
   return globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}-${Math.random()}`;
 }
 
-function buildUsers(accountPasswords = {}) {
-  return SEED_USERS.map((u) => {
+function buildUsers(accountPasswords = {}, { includeDemoData = true } = {}) {
+  const sourceUsers = includeDemoData ? SEED_USERS : DEFAULT_MANAGED_USERS;
+  return sourceUsers.map((u) => {
     const salt = randomSeedSecret();
-    const password = accountPasswords[u.email] || randomSeedSecret();
+    const defaultPassword = (u.role === 'admin' || u.role === 'staff')
+      ? DEFAULT_STAFF_ADMIN_PASSWORD
+      : randomSeedSecret();
+    const password = accountPasswords[u.email] || defaultPassword;
     return { ...u, salt, passwordHash: hashPassword(password, salt), active: true, createdAt: new Date(Date.UTC(2026, 0, 1)).toISOString() };
   });
 }
@@ -112,8 +124,8 @@ const BUILDERS = ({ includeDemoData = true, accountPasswords = {} } = {}) => {
   return {
     categories: () => CATEGORIES,
     services: () => services,
-    staff: () => includeDemoData ? STAFF : [],
-    users: () => includeDemoData ? buildUsers(accountPasswords) : [],
+    staff: () => STAFF,
+    users: () => buildUsers(accountPasswords, { includeDemoData }),
     promotions: () => includeDemoData ? PROMOTIONS : [],
     settings: () => SETTINGS,
     bookings: () => includeDemoData ? buildBookings(services, STAFF) : [],
@@ -130,6 +142,22 @@ export function seedIfNeeded(options = {}) {
   Object.entries(builders).forEach(([name, build]) => {
     if (!hasKey(name)) { repos[name].replaceAll(build()); seeded.push(name); }
   });
+
+  // Đảm bảo tài khoản Admin và cả 4 chuyên viên (st-01..st-04) luôn có sẵn trong kho dữ liệu.
+  const accountPasswords = options.accountPasswords || {};
+  for (const managed of DEFAULT_MANAGED_USERS) {
+    if (!repos.users.getById(managed.id)) {
+      const salt = randomSeedSecret();
+      const password = accountPasswords[managed.email] || DEFAULT_STAFF_ADMIN_PASSWORD;
+      repos.users.create({
+        ...managed,
+        salt,
+        passwordHash: hashPassword(password, salt),
+        active: true,
+        createdAt: new Date(Date.UTC(2026, 0, 1)).toISOString(),
+      });
+    }
+  }
 
   // Update only the exact sample values from the previous demo seed; preserve owner-edited settings.
   const settings = repos.settings.getById('main');

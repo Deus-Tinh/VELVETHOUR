@@ -11,7 +11,7 @@ import { bookingService } from '../services/bookingService.js';
 import { authService } from '../services/authService.js';
 import { staffService } from '../services/staffSettingsPromoService.js';
 import { todayStr, formatVND, esc, formatDate, businessNow, timeToMin } from '../core/utils.js';
-import { showToast, showConfirmModal } from '../ui/components.js';
+import { showToast, showConfirmModal, openChangePasswordModal } from '../ui/components.js';
 
 let filterDate = todayStr();
 
@@ -47,10 +47,16 @@ export function renderStaffDashboardPage() {
     <div class="page-banner" style="padding: 35px 20px;">
       <div class="breadcrumbs"><a href="/" style="color:inherit;text-decoration:none;">Trang Chủ</a> / Staff Portal</div>
       <h1 style="font-size: 2.2rem;">LỊCH LÀM VIỆC CHUYÊN VIÊN</h1>
-      <p>Chuyên viên: <strong>${esc(staffInfo.name)}</strong> (${esc(staffInfo.title)})</p>
+      <p>Chuyên viên: <strong>${esc(staffInfo.name)}</strong> (${esc(staffInfo.title)}) • ${esc(currentUser.email)}</p>
     </div>
 
     <div class="section-container" style="padding-top: 35px; padding-bottom: 70px;">
+      <!-- Thanh thao tác tài khoản chuyên viên -->
+      <div style="display: flex; justify-content: flex-end; gap: 10px; margin-bottom: 20px; flex-wrap: wrap;">
+        <button type="button" class="btn-outline btn-sm" id="staffChangePasswordBtn">🔑 Đổi Mật Khẩu</button>
+        <button type="button" class="btn-outline btn-sm" id="staffLogoutBtn">Đăng Xuất</button>
+      </div>
+
       <!-- KPI Nhanh -->
       <div class="kpi-grid">
         <div class="kpi-card green">
@@ -143,6 +149,20 @@ export function renderStaffDashboardPage() {
       `}
     </div>
   `;
+
+  // Sự kiện đổi mật khẩu & đăng xuất
+  document.getElementById('staffChangePasswordBtn')?.addEventListener('click', () => {
+    openChangePasswordModal({
+      user: currentUser,
+      onChangePassword: (uid, oldPass, newPass, confirmPass) =>
+        authService.changePassword(uid, oldPass, newPass, confirmPass),
+    });
+  });
+  document.getElementById('staffLogoutBtn')?.addEventListener('click', async () => {
+    await authService.logout();
+    showToast('Đã đăng xuất tài khoản chuyên viên.', 'normal');
+    renderStaffDashboardPage();
+  });
 
   // Sự kiện lọc ngày
   document.getElementById('staffDateFilterInput')?.addEventListener('change', (e) => {

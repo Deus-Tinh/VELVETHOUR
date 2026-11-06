@@ -13,6 +13,7 @@
     { "source": "/nhac", "destination": "/index.html" },
     { "source": "/dang-nhap", "destination": "/index.html" },
     { "source": "/dang-ky", "destination": "/index.html" },
+    { "source": "/quen-mat-khau", "destination": "/index.html" },
     { "source": "/moi-nhan-vien", "destination": "/index.html" },
     { "source": "/uu-dai/:slug", "destination": "/index.html" },
     { "source": "/mp3/:path*", "destination": "https://serenityspa-37e2.onweeny.com/mp3/:path*" }

@@ -151,3 +151,38 @@ test('Auth tabs update the route and pending signup cannot be submitted twice', 
     authService.getCurrentUser = originals.currentUser;
   }
 });
+
+test('Forgot password tab is hidden on Login/Register and appears only when clicking Quên mật khẩu?', async () => {
+  const originals = {
+    document: globalThis.document,
+    window: globalThis.window,
+    online: apiClient.isOnline,
+    currentUser: authService.getCurrentUser,
+  };
+  globalThis.document = createDocument();
+  globalThis.window = createWindow('https://serenity.local/dang-nhap');
+  apiClient.isOnline = () => true;
+  authService.getCurrentUser = () => null;
+  try {
+    renderAuthPage('login', null);
+    assert.equal(document.getElementById('tabForgotBtn'), null, 'Forgot tab is hidden on login view');
+    assert.ok(document.getElementById('forgotPasswordBtn'), 'Forgot password link button exists on login view');
+
+    renderAuthPage('register', null);
+    assert.equal(document.getElementById('tabForgotBtn'), null, 'Forgot tab is hidden on register view');
+
+    renderAuthPage('login', null);
+    await document.getElementById('forgotPasswordBtn').dispatch('click');
+    assert.equal(window.location.pathname, '/quen-mat-khau');
+
+    renderAuthPage('forgot', null);
+    assert.ok(document.getElementById('tabForgotBtn'), 'Forgot tab is visible on forgot password view');
+    assert.ok(document.getElementById('backToLoginBtn'), 'Back to login button is visible on forgot password view');
+  } finally {
+    globalThis.document = originals.document;
+    globalThis.window = originals.window;
+    apiClient.isOnline = originals.online;
+    authService.getCurrentUser = originals.currentUser;
+  }
+});
+

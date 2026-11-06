@@ -115,6 +115,78 @@ export function openServiceModal(serviceId, serviceDate = todayStr()) {
   modal.classList.add('show');
 }
 
+export function openChangePasswordModal({ currentUser, onChangePassword }) {
+  const modal = document.getElementById('serviceModal');
+  const body = document.getElementById('serviceModalBody');
+  if (!modal || !body || !currentUser) return;
+
+  body.innerHTML = `
+    <div style="padding: 28px; max-width: 460px; margin: 0 auto; width: 100%;">
+      <h3 style="font-family: var(--font-heading); font-size: 1.45rem; color: var(--text-dark); margin: 0 0 6px;">
+        Đổi Mật Khẩu Tài Khoản
+      </h3>
+      <p style="font-size: 13px; color: #64748b; margin: 0 0 18px;">
+        Tài khoản: <strong>${esc(currentUser.name)}</strong> (${esc(currentUser.email)})
+      </p>
+      <form id="modalChangePasswordForm" novalidate>
+        <div id="modalChangePwdError" role="alert" style="display:none; color:#dc2626; font-size:13px; margin-bottom:12px;"></div>
+        <div class="form-group">
+          <label for="modalOldPassword">Mật khẩu hiện tại <span style="color:#ef4444;">*</span></label>
+          <input type="password" class="form-control" id="modalOldPassword" autocomplete="current-password" placeholder="Nhập mật khẩu đang dùng..." required />
+        </div>
+        <div class="form-group">
+          <label for="modalNewPassword">Mật khẩu mới <span style="color:#ef4444;">*</span></label>
+          <input type="password" class="form-control" id="modalNewPassword" autocomplete="new-password" minlength="8" placeholder="8+ ký tự, có chữ số & ký tự đặc biệt" required />
+          <small style="display:block; margin-top:5px; color:#64748b;">Tối thiểu 8 ký tự, gồm ít nhất 1 chữ số và 1 ký tự đặc biệt.</small>
+        </div>
+        <div class="form-group">
+          <label for="modalConfirmPassword">Xác nhận mật khẩu mới <span style="color:#ef4444;">*</span></label>
+          <input type="password" class="form-control" id="modalConfirmPassword" autocomplete="new-password" minlength="8" placeholder="Nhập lại mật khẩu mới..." required />
+        </div>
+        <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px;">
+          <button type="button" class="btn-outline" id="cancelModalChangePwdBtn">Hủy</button>
+          <button type="submit" class="btn-primary" id="submitModalChangePwdBtn">Cập Nhật Mật Khẩu</button>
+        </div>
+      </form>
+    </div>
+  `;
+
+  modal.classList.add('show');
+  const close = () => modal.classList.remove('show');
+  document.getElementById('cancelModalChangePwdBtn')?.addEventListener('click', close);
+
+  document.getElementById('modalChangePasswordForm')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const errorBox = document.getElementById('modalChangePwdError');
+    const submitBtn = document.getElementById('submitModalChangePwdBtn');
+    const oldPassword = document.getElementById('modalOldPassword')?.value || '';
+    const newPassword = document.getElementById('modalNewPassword')?.value || '';
+    const confirmPassword = document.getElementById('modalConfirmPassword')?.value || '';
+
+    if (errorBox) { errorBox.style.display = 'none'; errorBox.textContent = ''; }
+    if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Đang cập nhật...'; }
+
+    try {
+      await onChangePassword(currentUser.id, oldPassword, newPassword, confirmPassword);
+      close();
+      showToast('Đã cập nhật mật khẩu thành công!', 'success');
+    } catch (error) {
+      const msg = error.message || 'Không thể đổi mật khẩu.';
+      if (errorBox) {
+        errorBox.textContent = msg;
+        errorBox.style.display = 'block';
+      }
+      showToast(msg, 'danger');
+    } finally {
+      if (submitBtn?.isConnected) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Cập Nhật Mật Khẩu';
+      }
+    }
+  });
+}
+
 // Gắn helper an toàn vào window phục vụ tương thích các event listeners
 window.openServiceModal = openServiceModal;
 window.showToast = showToast;
+
