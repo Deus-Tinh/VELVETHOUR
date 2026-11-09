@@ -6,8 +6,9 @@ export const HTTP_SERVER_OPTIONS = Object.freeze({
   headersTimeout: 10_000,
   requestTimeout: 30_000,
   connectionsCheckingInterval: 1_000,
-  keepAliveTimeout: 5_000,
+  keepAliveTimeout: 65_000,
   maxHeaderSize: 16 * 1024,
+  noDelay: true,
 });
 
 export function apiRateLimitFromEnv(env = process.env) {

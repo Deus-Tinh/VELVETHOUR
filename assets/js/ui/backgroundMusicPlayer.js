@@ -371,7 +371,7 @@ export function initBackgroundMusicPlayer() {
   repeatMode = preferences.repeat;
 
   audio = new Audio();
-  audio.preload = 'auto';
+  audio.preload = 'metadata';
   audio.volume = preferences.volume;
   audio.addEventListener('playing', () => {
     status = 'playing';

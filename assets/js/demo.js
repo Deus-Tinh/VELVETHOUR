@@ -432,6 +432,25 @@ export function formatVND(amount) {
   return new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(amount);
 }
 
+// DỮ LIỆU DỊCH VỤ & GÓI TRỊ LIỆU (ARRAY OF OBJECTS)
+const BOOTSTRAP_CACHE_KEY = '__serenity_bootstrap_cache';
+
+function readBootstrapCache() {
+  try {
+    const raw = localStorage.getItem(BOOTSTRAP_CACHE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+
+function writeBootstrapCache(snapshot) {
+  try {
+    localStorage.setItem(BOOTSTRAP_CACHE_KEY, JSON.stringify({
+      ts: Date.now(),
+      snapshot,
+    }));
+  } catch { /* quota exceeded — ignore */ }
+}
+
 // KHỞI ĐỘNG HỆ THỐNG ĐIỀU HƯỚNG
 document.addEventListener('DOMContentLoaded', () => {
   initBackgroundMusicPlayer();
@@ -443,35 +462,88 @@ document.addEventListener('DOMContentLoaded', () => {
     handleRoute();
   });
   const appRoot = document.getElementById('appRoot');
-  if (appRoot) appRoot.innerHTML = '<div class="section-container" style="padding:100px 20px;text-align:center;">Đang kết nối dữ liệu Serenity…</div>';
+
+  // ── Stale-While-Revalidate ──────────────────────────────────────────────────
+  // Nếu trình duyệt đã có cache hợp lệ từ phiên trước, render ngay lập tức
+  // (0 ms chờ mạng) rồi cập nhật ngầm khi bootstrap trả về.
+  const cached = readBootstrapCache();
+  let renderedFromCache = false;
+
+  if (cached?.snapshot) {
+    try {
+      // Áp dụng dữ liệu cache: hydrate nội bộ của apiClient
+      // thông qua fake-online path tương tự initialize().
+      apiClient._hydrateCache(cached.snapshot);
+      routerReady = true;
+      initNavbar();
+      initModalListeners();
+      on('auth:login', () => updateActiveNav());
+      on('auth:logout', () => updateActiveNav());
+      on('data:changed', ({ source }) => {
+        if (source !== 'remote') return;
+        updateActiveNav();
+        if (document.querySelector('.spa-agent-panel') || document.querySelector('#serviceModal.show')) return;
+        const active = document.activeElement;
+        if (active?.matches?.('input, textarea, select')) return;
+        const scrollY = window.scrollY;
+        handleRoute();
+        requestAnimationFrame(() => window.scrollTo({ top: scrollY, behavior: 'auto' }));
+      });
+      initChatbot();
+      handleRoute();
+      renderedFromCache = true;
+    } catch {
+      renderedFromCache = false;
+    }
+  }
+
+  if (!renderedFromCache && appRoot) {
+    appRoot.innerHTML = '<div class="section-container" style="padding:100px 20px;text-align:center;">Đang kết nối dữ liệu Serenity…</div>';
+  }
+
+  // Khởi tạo kết nối thực — dù đã render từ cache hay chưa đều phải chạy
   apiClient.initialize().then((sharedBackend) => {
+    // Lưu cache mới nhất cho lần reload tới (chỉ khi online)
+    if (sharedBackend) {
+      const freshSnapshot = apiClient._getLastSnapshot();
+      if (freshSnapshot) writeBootstrapCache(freshSnapshot);
+    }
+
     if (!sharedBackend) {
-      if (appRoot) appRoot.innerHTML = `
-        <section class="section-container" style="max-width:680px;padding:90px 20px;text-align:center;">
-          <h2 style="font-family:var(--font-heading);color:var(--text-dark);">Chưa kết nối được máy chủ</h2>
-          <p style="color:var(--text-light);line-height:1.7;">Dữ liệu Serenity được lưu tập trung. Hãy chạy <code>npm start</code> trong thư mục project để mở hệ thống tại cổng 3001, rồi thử lại.</p>
-          <button type="button" class="btn-primary" id="retryServerBtn">Thử kết nối lại</button>
-        </section>`;
-      document.getElementById('retryServerBtn')?.addEventListener('click', () => window.location.reload());
+      if (!renderedFromCache && appRoot) {
+        appRoot.innerHTML = `
+          <section class="section-container" style="max-width:680px;padding:90px 20px;text-align:center;">
+            <h2 style="font-family:var(--font-heading);color:var(--text-dark);">Chưa kết nối được máy chủ</h2>
+            <p style="color:var(--text-light);line-height:1.7;">Dữ liệu Serenity được lưu tập trung. Hãy chạy <code>npm start</code> trong thư mục project để mở hệ thống tại cổng 3001, rồi thử lại.</p>
+            <button type="button" class="btn-primary" id="retryServerBtn">Thử kết nối lại</button>
+          </section>`;
+        document.getElementById('retryServerBtn')?.addEventListener('click', () => window.location.reload());
+      }
       return;
     }
-    routerReady = true;
-    initNavbar();
-    initModalListeners();
-    on('auth:login', () => updateActiveNav());
-    on('auth:logout', () => updateActiveNav());
-    on('data:changed', ({ source }) => {
-      if (source !== 'remote') return;
-      updateActiveNav();
-      if (document.querySelector('.spa-agent-panel') || document.querySelector('#serviceModal.show')) return;
-      const active = document.activeElement;
-      if (active?.matches?.('input, textarea, select')) return;
-      const scrollY = window.scrollY;
+
+    if (!renderedFromCache) {
+      // Lần đầu không có cache: khởi động bình thường
+      routerReady = true;
+      initNavbar();
+      initModalListeners();
+      on('auth:login', () => updateActiveNav());
+      on('auth:logout', () => updateActiveNav());
+      on('data:changed', ({ source }) => {
+        if (source !== 'remote') return;
+        updateActiveNav();
+        if (document.querySelector('.spa-agent-panel') || document.querySelector('#serviceModal.show')) return;
+        const active = document.activeElement;
+        if (active?.matches?.('input, textarea, select')) return;
+        const scrollY = window.scrollY;
+        handleRoute();
+        requestAnimationFrame(() => window.scrollTo({ top: scrollY, behavior: 'auto' }));
+      });
+      initChatbot();
       handleRoute();
-      requestAnimationFrame(() => window.scrollTo({ top: scrollY, behavior: 'auto' }));
-    });
-    initChatbot();
-    handleRoute();
+    }
+    // Nếu đã render từ cache: data:changed events từ hydrate() trong initialize() sẽ
+    // tự động re-render nếu dữ liệu thực sự thay đổi (đã được xử lý bởi handler trên).
   });
 });
 

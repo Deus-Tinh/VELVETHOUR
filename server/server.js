@@ -56,7 +56,7 @@ const MUSIC_DIRECTORY = path.resolve(process.env.SERENITY_MUSIC_DIR || path.join
 const DATABASE_PATH = path.resolve(process.env.SERENITY_DB_PATH || path.join(DATA_DIR, 'serenity.sqlite'));
 const PORT = Number(process.env.PORT || process.env.SERENITY_PORT || 3001);
 if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) throw new Error('PORT or SERENITY_PORT must be an integer between 1 and 65535.');
-const HOST = process.env.SERENITY_HOST || '0.0.0.0';
+const HOST = process.env.SERENITY_HOST || '';
 
 if (IS_PRODUCTION && !ALLOW_EPHEMERAL) {
   await assertPersistentSQLiteStorage({ appRoot: ROOT, dataDir: DATA_DIR, databasePath: DATABASE_PATH, backupDir: BACKUP_DIR });
@@ -83,6 +83,9 @@ const MIME = {
 const db = new DatabaseSync(DATABASE_PATH);
 db.exec(`
   PRAGMA journal_mode = WAL;
+  PRAGMA synchronous = NORMAL;
+  PRAGMA temp_store = MEMORY;
+  PRAGMA busy_timeout = 5000;
   PRAGMA foreign_keys = ON;
   CREATE TABLE IF NOT EXISTS collection_records (
     collection TEXT NOT NULL,
@@ -182,6 +185,7 @@ const q = {
   endChatConversation: db.prepare("UPDATE chat_conversations SET status = 'ended', updated_at = ? WHERE id = ?"),
   chatConversationsCount: db.prepare('SELECT COUNT(*) AS total FROM chat_conversations WHERE expires_at > ?'),
   chatMessagesCount: db.prepare('SELECT COUNT(*) AS total FROM chat_messages WHERE created_at >= ?'),
+  dataVersion: db.prepare('PRAGMA data_version'),
 };
 
 q.deleteExpiredSessions.run(Date.now());
@@ -193,7 +197,36 @@ function transaction(work) {
   catch (error) { db.exec('ROLLBACK'); throw error; }
 }
 
-function parseRows(collection) { return q.records.all(collection).map((row) => JSON.parse(row.payload)); }
+
+// ── In-memory row cache ───────────────────────────────────────────────────────
+// parseRows() is called on every /api/bootstrap request for every collection.
+// Cache by (collection, version) so repeated reads within the same version
+// skip the SQLite SELECT + JSON.parse entirely.
+// PRAGMA data_version detects external changes from other connections/tests instantly.
+let lastDataVersion = 0;
+let internalWriteSeq = 0;
+const rowCache = new Map(); // collection → { version, seq, rows }
+
+function parseRows(collection) {
+  const currentDataVersion = q.dataVersion.get()?.data_version || 0;
+  if (currentDataVersion !== lastDataVersion) {
+    lastDataVersion = currentDataVersion;
+    rowCache.clear();
+  }
+  const v = versionOf(collection);
+  const cached = rowCache.get(collection);
+  if (cached && cached.version === v && cached.seq === internalWriteSeq) return cached.rows;
+  const rows = q.records.all(collection).map((row) => JSON.parse(row.payload));
+  rowCache.set(collection, { version: v, seq: internalWriteSeq, rows });
+  return rows;
+}
+
+function invalidateRowCache(collection) {
+  internalWriteSeq += 1;
+  if (collection) rowCache.delete(collection);
+  else rowCache.clear();
+}
+
 function getRecord(collection, id) {
   const row = q.record.get(collection, id);
   return row ? JSON.parse(row.payload) : null;
@@ -201,10 +234,19 @@ function getRecord(collection, id) {
 function saveRecord(collection, record) {
   if (collection === 'bookings') record.revision = Number(getRecord(collection, record.id)?.revision || 0) + 1;
   q.upsert.run(collection, record.id, JSON.stringify(record));
+  invalidateRowCache(collection);
 }
-function removeRecord(collection, id) { q.deleteRecord.run(collection, id); }
+function removeRecord(collection, id) {
+  q.deleteRecord.run(collection, id);
+  invalidateRowCache(collection);
+}
 function versionOf(collection) { return q.version.get(collection)?.version || 0; }
-function nextVersion(collection) { const version = versionOf(collection) + 1; q.setVersion.run(collection, version); return version; }
+function nextVersion(collection) {
+  const version = versionOf(collection) + 1;
+  q.setVersion.run(collection, version);
+  invalidateRowCache(collection);
+  return version;
+}
 function safeUser(user) {
   if (!user) return null;
   const { passwordHash: _hash, passwordSalt: _salt, salt: _oldSalt, ...safe } = user;
@@ -924,16 +966,28 @@ function readMusicJson(key, fallback) {
   if (!raw) return fallback;
   try { return JSON.parse(raw); } catch { return fallback; }
 }
+let bundledMusicCache = null;
 async function getMusicLibrary() {
   let bundled = [];
   try {
-    bundled = buildMusicManifest(path.join(ROOT, 'mp3')).tracks.map((track) => ({
-      id: track.id,
-      title: track.title,
-      filename: track.filename,
-      url: `/mp3/${encodeURIComponent(track.filename)}`,
-      source: 'bundled',
-    }));
+    const mp3Dir = path.join(ROOT, 'mp3');
+    const dirInfo = await stat(mp3Dir).catch(() => null);
+    if (dirInfo?.isDirectory()) {
+      const mtimeMs = dirInfo.mtimeMs;
+      if (!bundledMusicCache || bundledMusicCache.mtimeMs !== mtimeMs) {
+        bundledMusicCache = {
+          mtimeMs,
+          tracks: buildMusicManifest(mp3Dir).tracks.map((track) => ({
+            id: track.id,
+            title: track.title,
+            filename: track.filename,
+            url: `/mp3/${encodeURIComponent(track.filename)}`,
+            source: 'bundled',
+          })),
+        };
+      }
+      bundled = bundledMusicCache.tracks;
+    }
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
   }
@@ -1689,9 +1743,15 @@ async function createBackup() {
   q.setMeta.run('last_backup_date', new Date().toISOString().slice(0, 10));
   return file;
 }
+let backupInProgress = null;
 async function backupIfDue() {
   const today = new Date().toISOString().slice(0, 10);
-  if (q.meta.get('last_backup_date')?.value !== today) await createBackup();
+  if (q.meta.get('last_backup_date')?.value !== today) {
+    if (!backupInProgress) {
+      backupInProgress = createBackup().finally(() => { backupInProgress = null; });
+    }
+    await backupInProgress;
+  }
 }
 
 async function routeApi(request, response, url) {
@@ -2913,7 +2973,21 @@ async function serveStatic(request, response, url) {
   if (!fileInfo?.isFile()) { response.writeHead(404).end('Not Found'); return; }
   const extension = path.extname(file).toLowerCase();
   if (extension === '.mp3') return serveAudioFile(request, response, file, fileInfo);
-  response.writeHead(200, { 'Content-Type': MIME[extension] || 'application/octet-stream', 'Cache-Control': ['.html', '.js', '.css', '.json'].includes(extension) ? 'no-cache' : 'public, max-age=3600' });
+
+  const etag = `"${fileInfo.size.toString(36)}-${Math.floor(fileInfo.mtimeMs).toString(36)}"`;
+  const isNoCacheAsset = ['.html', '.js', '.css', '.json'].includes(extension);
+  const cacheControl = isNoCacheAsset ? 'no-cache' : 'public, max-age=3600';
+
+  if (request.headers['if-none-match'] === etag) {
+    response.writeHead(304, { ETag: etag, 'Cache-Control': cacheControl });
+    return response.end();
+  }
+
+  response.writeHead(200, {
+    'Content-Type': MIME[extension] || 'application/octet-stream',
+    'Cache-Control': cacheControl,
+    ETag: etag,
+  });
   if (request.method === 'HEAD') return response.end();
   createReadStream(file).on('error', (error) => response.destroy(error)).pipe(response);
 }
@@ -2972,8 +3046,12 @@ export function startServer() {
   const aiConfigured = isAiConfigured(process.env);
   const provider = String(process.env.AI_PROVIDER || '').toLowerCase();
   console.log(`[AI] ${provider === 'gemini' ? 'Gemini' : 'AI'} configured: ${aiConfigured ? 'YES' : 'NO'}${aiConfigured ? ` · model: ${process.env.AI_MODEL}` : ''}`);
-  server.listen(PORT, HOST, () => console.log(`Serenity shared app/API đang chạy tại http://localhost:${PORT}/ (host ${HOST})`));
-  backupIfDue().catch((error) => console.error('[backup]', error));
+  const onListening = () => {
+    console.log(`Serenity shared app/API đang chạy tại http://localhost:${PORT}/ (host ${HOST || 'dual-stack :: / 0.0.0.0'})`);
+    setImmediate(() => backupIfDue().catch((error) => console.error('[backup]', error)));
+  };
+  if (HOST) server.listen(PORT, HOST, onListening);
+  else server.listen(PORT, onListening);
   const timer = setInterval(() => {
     try { agentHistory.prune(); } catch (error) { console.error('[agent-history-cleanup]', error); }
     backupIfDue().catch((error) => console.error('[backup]', error));

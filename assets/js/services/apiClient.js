@@ -18,6 +18,7 @@ let holidaySales = [];
 let siteContent = { pages: [], menuItems: [] };
 let pricingDate = todayStr();
 let refreshTimer = null;
+let lastSnapshot = null;
 const SYNC_STATE_KEY = '__shared_sync_state';
 const syncState = readJSON(SYNC_STATE_KEY, { dirty: [], baselines: {} });
 const dirtyCollections = new Set(Array.isArray(syncState.dirty) ? syncState.dirty : []);
@@ -100,8 +101,10 @@ function apiBase() {
 }
 
 async function request(path, options = {}) {
+  const signal = options.signal ?? (typeof AbortSignal?.timeout === 'function' ? AbortSignal.timeout(10000) : undefined);
   const response = await fetch(`${apiBase()}${path}`, {
     credentials: 'include',
+    ...(signal ? { signal } : {}),
     ...options,
     headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
   });
@@ -116,7 +119,26 @@ async function request(path, options = {}) {
   return result;
 }
 
+async function requestBootstrapWithRetry(delays = [350, 900, 2000, 3500]) {
+  let lastError;
+  for (let attempt = 0; attempt <= delays.length; attempt += 1) {
+    try {
+      const timeoutSignal = typeof AbortSignal?.timeout === 'function' ? AbortSignal.timeout(8000) : undefined;
+      return await request('/bootstrap', timeoutSignal ? { signal: timeoutSignal } : {});
+    } catch (error) {
+      lastError = error;
+      const retryable = !error.status || [502, 503, 504].includes(error.status);
+      if (!retryable || attempt >= delays.length) break;
+      await new Promise((resolve) => setTimeout(resolve, delays[attempt]));
+    }
+  }
+  throw lastError;
+}
+
 function hydrate(snapshot) {
+  const prevRole = currentRole;
+  const prevUserId = lastSnapshot?.currentUser?.id || readJSON('session', null)?.userId || null;
+  lastSnapshot = snapshot;
   const collections = snapshot.collections || {};
   const changedCollections = [];
   if (pricingDate !== todayStr()) { pricingDate = todayStr(); changedCollections.push('pricingDate'); }
@@ -155,15 +177,20 @@ function hydrate(snapshot) {
       }
       persistSyncState();
     }
-    if (JSON.stringify(currentRows) !== JSON.stringify(nextRows)) changedCollections.push(name);
-    // Không phát sự kiện ghi dữ liệu ở đây: đây là bản sao cache của dữ liệu máy chủ.
-    writeJSON(name, nextRows);
+    if (JSON.stringify(currentRows) !== JSON.stringify(nextRows)) {
+      changedCollections.push(name);
+      // Chỉ ghi lại vào localStorage khi dữ liệu thực sự thay đổi so với bản lưu hiện tại.
+      writeJSON(name, nextRows);
+    }
   }
+  const nextUserId = snapshot.currentUser?.id || null;
+  const nextRole = snapshot.currentUser?.role || null;
+  if (nextUserId !== prevUserId || nextRole !== prevRole) changedCollections.push('session');
   if (snapshot.currentUser) writeJSON('session', { userId: snapshot.currentUser.id, loggedInAt: new Date().toISOString() });
   else removeKey('session');
   versions = { ...(snapshot.versions || {}) };
   occupiedSlots = Array.isArray(snapshot.occupiedSlots) ? snapshot.occupiedSlots : [];
-  currentRole = snapshot.currentUser?.role || null;
+  currentRole = nextRole;
   setState({ currentUser: snapshot.currentUser || null });
   if (initialized) changedCollections.forEach((collection) => emit('data:changed', { collection, source: 'remote' }));
 }
@@ -178,7 +205,7 @@ function rememberBooking(booking) {
 
 async function refresh() {
   if (!online) return null;
-  const snapshot = await request('/bootstrap');
+  const snapshot = await requestBootstrapWithRetry([200, 450]);
   hydrate(snapshot);
   return snapshot;
 }
@@ -326,11 +353,12 @@ export const apiClient = {
     if (typeof window === 'undefined') return false;
     installSync();
     try {
-      const health = await request('/health');
-      if (!health.ok) return false;
+      // Single round-trip: /api/bootstrap proves server is alive AND returns all data.
+      // No separate /health call needed — eliminates one full sequential round-trip on every page load.
+      const snapshot = await requestBootstrapWithRetry();
       online = true;
       installSync();
-      await refresh();
+      hydrate(snapshot);
       syncPendingCollections();
       return true;
     } catch {
@@ -436,4 +464,18 @@ export const apiClient = {
     URL.revokeObjectURL(objectUrl);
     return link.download;
   },
+  /**
+   * Pre-populates stores from a cached snapshot (localStorage) for instant render.
+   * Does NOT set online=true — the real initialize() will do that after /api/bootstrap.
+   * This allows demo.js to render the UI immediately from cache on reload.
+   */
+  _hydrateCache(snapshot) {
+    if (!snapshot || typeof snapshot !== 'object') return;
+    // installSync first so event listeners are set up before hydrate emits
+    installSync();
+    // Hydrate without touching online flag — keep it false until real server responds
+    hydrate(snapshot);
+  },
+  /** Returns the last snapshot received from /api/bootstrap, or null if none yet. */
+  _getLastSnapshot() { return lastSnapshot; },
 };

@@ -30,7 +30,13 @@ export function proxyRequest(request, env = process.env, fetcher = fetch) {
   }, (url, options) => fetcher(url, options.body ? { ...options, duplex: 'half' } : options));
 }
 
+export const config = {
+  runtime: 'edge',
+  preferredRegion: ['sin1', 'hkg1'],
+};
+
 const handler = (request) => proxyRequest(request);
+export default handler;
 export const GET = handler;
 export const HEAD = handler;
 export const POST = handler;
