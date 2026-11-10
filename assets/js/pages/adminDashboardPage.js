@@ -1376,61 +1376,160 @@ function openServiceFormModal(existingService, categories) {
 /* ---------------- 4. TAB DANH MỤC (CRUD) ---------------- */
 function renderTabCategories(container) {
   const cats = categoryService.list();
+  const allServices = serviceService.list();
+  const serviceCountByCat = new Map();
+  allServices.forEach((s) => {
+    const cid = s.category;
+    if (cid) serviceCountByCat.set(cid, (serviceCountByCat.get(cid) || 0) + 1);
+  });
 
   container.innerHTML = `
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-      <h3 style="font-family: var(--font-heading); color: var(--text-dark); margin: 0;">Quản Lý Danh Mục</h3>
-      <button type="button" class="btn-primary btn-sm" id="addNewCatBtn">+ Thêm Danh Mục</button>
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 12px;">
+      <div>
+        <h3 style="font-family: var(--font-heading); color: var(--text-dark); margin: 0 0 4px;">Quản Lý Danh Mục Liệu Trình</h3>
+        <p style="font-size: 13px; color: #64748b; margin: 0;">Phân loại dịch vụ hiển thị trên Menu và các bước đặt lịch của khách hàng.</p>
+      </div>
+      <span style="font-size: 13px; color: #64748b; background: #f8fafc; padding: 6px 14px; border-radius: 20px; border: 1px solid #e2e8f0;">
+        Tổng số: <strong>${cats.length}</strong> danh mục
+      </span>
     </div>
 
-    <div class="data-table-wrap" style="max-width: 600px;">
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th>Tên Danh Mục</th>
-            <th>Trạng Thái</th>
-            <th>Thao Tác</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${cats.map((c) => `
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 28px; align-items: start;">
+      <!-- Cột Trái: Bảng Danh Mục -->
+      <div class="data-table-wrap" style="background: #fff; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.04); border: 1px solid #f1f5f9; overflow: hidden;">
+        <table class="data-table">
+          <thead>
             <tr>
-              <td><strong>${esc(c.name)}</strong></td>
-              <td><span class="badge-status ${c.active !== false ? 'badge-confirmed' : 'badge-cancelled'}">${c.active !== false ? 'Bật' : 'Tắt'}</span></td>
-              <td>
-                <button type="button" class="btn-sm btn-outline del-cat-btn" data-id="${esc(c.id)}" style="color:#dc2626;">Xóa</button>
-              </td>
+              <th>Tên Danh Mục</th>
+              <th style="text-align: center;">Số Dịch Vụ</th>
+              <th>Trạng Thái</th>
+              <th>Thao Tác</th>
             </tr>
-          `).join('')}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            ${cats.map((c) => {
+              const count = serviceCountByCat.get(c.id) || 0;
+              const isActive = c.active !== false;
+              return `
+                <tr>
+                  <td>
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                      <span style="font-size: 16px;">📁</span>
+                      <strong>${esc(c.name)}</strong>
+                    </div>
+                  </td>
+                  <td style="text-align: center;">
+                    <span style="background: #f1f5f9; color: #475569; font-size: 12px; font-weight: 600; padding: 3px 8px; border-radius: 12px;">
+                      ${count} liệu trình
+                    </span>
+                  </td>
+                  <td>
+                    <span class="badge-status ${isActive ? 'badge-confirmed' : 'badge-cancelled'}">
+                      ${isActive ? 'Hoạt Động' : 'Tạm Ẩn'}
+                    </span>
+                  </td>
+                  <td>
+                    <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                      <button type="button" class="btn-sm btn-outline toggle-cat-btn" data-id="${esc(c.id)}" data-active="${isActive ? 'true' : 'false'}" title="${isActive ? 'Tạm ẩn' : 'Kích hoạt'}">
+                        ${isActive ? 'Ẩn' : 'Bật'}
+                      </button>
+                      <button type="button" class="btn-sm btn-outline del-cat-btn" data-id="${esc(c.id)}" style="color:#dc2626;" title="Xóa danh mục">
+                        Xóa
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              `;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Cột Phải: Thêm Danh Mục Mới & Hướng Dẫn -->
+      <div style="display: flex; flex-direction: column; gap: 24px;">
+        <!-- Card Thêm Mới -->
+        <div style="background: #fff; padding: 24px; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.04); border: 1px solid #f1f5f9;">
+          <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 16px;">
+            <div style="width: 36px; height: 36px; border-radius: 8px; background: #fdf6ec; color: var(--primary-brown); display: flex; align-items: center; justify-content: center; font-size: 18px;">✨</div>
+            <div>
+              <h4 style="font-family: var(--font-heading); margin: 0; color: var(--text-dark); font-size: 1.15rem;">Thêm Danh Mục Mới</h4>
+              <p style="font-size: 12px; color: #64748b; margin: 2px 0 0 0;">Tạo nhóm để phân loại liệu trình và gán chuyên viên</p>
+            </div>
+          </div>
+          <form id="inlineAddCatForm" novalidate>
+            <div class="form-group" style="margin-bottom: 16px;">
+              <label for="newCatNameInput" style="font-weight: 600; font-size: 13px; color: #334155; margin-bottom: 6px; display: block;">Tên Danh Mục <span style="color:#ef4444;">*</span></label>
+              <input type="text" class="form-control" id="newCatNameInput" placeholder="Ví dụ: Chăm Sóc Toàn Thân, Xông Hơi..." maxlength="40" required />
+            </div>
+            <button type="submit" class="btn-primary" id="saveNewCatBtn" style="width: 100%; padding: 11px 20px; font-size: 14px;">
+              + Thêm Danh Mục
+            </button>
+          </form>
+        </div>
+
+        <!-- Card Thông Tin & Hướng Dẫn -->
+        <div style="background: #fdfbf7; border: 1px dashed #d6c7b2; border-radius: 12px; padding: 22px; display: flex; gap: 14px; align-items: flex-start;">
+          <span style="font-size: 26px; line-height: 1;">💡</span>
+          <div style="font-size: 13px; color: #574838; line-height: 1.6;">
+            <strong>Vai Trò Của Danh Mục Dịch Vụ</strong><br />
+            - <strong>Bộ Lọc Khách Hàng:</strong> Giúp khách hàng nhanh chóng tìm kiếm dịch vụ yêu thích trên trang đặt lịch và menu.<br />
+            - <strong>Chuyên Môn Chuyên Viên:</strong> Khi tạo chuyên viên, bạn có thể gán danh mục chuyên môn để hệ thống tự động phân công lịch hẹn phù hợp.<br />
+            - <strong>An Toàn Dữ Liệu:</strong> Nếu danh mục đã chứa dịch vụ, thao tác xóa sẽ tự động chuyển thành tạm ẩn để không làm hỏng lịch sử của khách.
+          </div>
+        </div>
+      </div>
     </div>
   `;
 
-  document.getElementById('addNewCatBtn')?.addEventListener('click', () => {
-    const name = prompt('Nhập tên danh mục mới:');
-    if (name && name.trim()) {
-      try {
-        categoryService.create({ name: name.trim() });
-        showToast('Thêm danh mục thành công!', 'success');
-        renderTabCategories(container);
-      } catch (e) {
-        showToast(e.message, 'danger');
-      }
+  // Thêm danh mục từ form inline
+  document.getElementById('inlineAddCatForm')?.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const input = document.getElementById('newCatNameInput');
+    const name = input?.value.trim();
+    if (!name) {
+      showToast('Vui lòng nhập tên danh mục.', 'danger');
+      return;
+    }
+    try {
+      categoryService.create({ name });
+      showToast('Thêm danh mục mới thành công!', 'success');
+      renderTabCategories(container);
+    } catch (err) {
+      showToast(err.message || 'Không thể tạo danh mục.', 'danger');
     }
   });
 
+  // Nút Bật / Ẩn danh mục
+  container.querySelectorAll('.toggle-cat-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const cid = btn.getAttribute('data-id');
+      const isCurrentlyActive = btn.getAttribute('data-active') === 'true';
+      try {
+        categoryService.update(cid, { active: !isCurrentlyActive });
+        showToast(`Đã ${isCurrentlyActive ? 'tạm ẩn' : 'kích hoạt'} danh mục thành công.`, 'success');
+        renderTabCategories(container);
+      } catch (err) {
+        showToast(err.message || 'Không thể cập nhật danh mục.', 'danger');
+      }
+    });
+  });
+
+  // Nút Xóa danh mục
   container.querySelectorAll('.del-cat-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
       const cid = btn.getAttribute('data-id');
       showConfirmModal({
         title: 'Xóa Danh Mục?',
-        message: 'Nếu danh mục đã chứa dịch vụ, hệ thống sẽ tạm ẩn danh mục.',
+        message: 'Nếu danh mục đã chứa dịch vụ, hệ thống sẽ tự động tạm ẩn danh mục để bảo vệ dữ liệu.',
         confirmText: 'Xác Nhận',
         onConfirm: () => {
-          categoryService.remove(cid);
-          showToast('Đã xóa hoặc tạm ẩn danh mục thành công.', 'success');
-          renderTabCategories(container);
+          try {
+            const res = categoryService.remove(cid);
+            showToast(res.mode === 'deactivated' ? 'Danh mục có dịch vụ nên đã được tạm ẩn.' : 'Đã xóa danh mục hoàn toàn.', 'success');
+            renderTabCategories(container);
+          } catch (err) {
+            showToast(err.message || 'Không thể xóa danh mục.', 'danger');
+          }
         }
       });
     });
@@ -1926,78 +2025,106 @@ function renderTabSettings(container) {
   const set = settingsService.get();
 
   container.innerHTML = `
-    <div style="background: #fff; padding: 30px; border-radius: 8px; max-width: 600px; box-shadow: 0 2px 10px rgba(0,0,0,0.04);">
-      <h3 style="font-family: var(--font-heading); color: var(--text-dark); margin-bottom: 20px;">
-        Cài Đặt Vận Hành Spa &amp; Đặt Lịch
-      </h3>
-
-      <div class="form-group">
-        <label>Tên Spa &amp; Thương Hiệu</label>
-        <input type="text" class="form-control" id="stSpaName" value="${esc(set.spaName)}" />
-      </div>
-
-      <div style="display:flex;gap:15px;">
-        <div class="form-group" style="flex:1;">
-          <label>Giờ Mở Cửa (Hàng ngày)</label>
-          <input type="time" class="form-control" id="stOpenTime" value="${set.openTime}" />
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 24px; align-items: start;">
+      <!-- Cột Trái: Cài Đặt Vận Hành Spa -->
+      <div style="background: #fff; padding: 28px; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.04); border: 1px solid #f1f5f9;">
+        <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 20px;">
+          <div style="width: 36px; height: 36px; border-radius: 8px; background: #e0f2fe; color: #0369a1; display: flex; align-items: center; justify-content: center; font-size: 18px;">⚙</div>
+          <div>
+            <h3 style="font-family: var(--font-heading); color: var(--text-dark); margin: 0; font-size: 1.25rem;">
+              Cài Đặt Vận Hành Spa &amp; Đặt Lịch
+            </h3>
+            <p style="font-size: 12px; color: #64748b; margin: 2px 0 0 0;">Cấu hình thời gian phục vụ, bước khung giờ và số phòng spa</p>
+          </div>
         </div>
-        <div class="form-group" style="flex:1;">
-          <label>Giờ Đóng Cửa (Hàng ngày)</label>
-          <input type="time" class="form-control" id="stCloseTime" value="${set.closeTime}" />
+
+        <div class="form-group" style="margin-bottom: 16px;">
+          <label style="font-weight: 600; font-size: 13px; color: #334155; margin-bottom: 6px; display: block;">Tên Spa &amp; Thương Hiệu</label>
+          <input type="text" class="form-control" id="stSpaName" value="${esc(set.spaName)}" />
+        </div>
+
+        <div style="display:flex;gap:15px;margin-bottom: 16px;">
+          <div class="form-group" style="flex:1;">
+            <label style="font-weight: 600; font-size: 13px; color: #334155; margin-bottom: 6px; display: block;">Giờ Mở Cửa (Hàng ngày)</label>
+            <input type="time" class="form-control" id="stOpenTime" value="${set.openTime}" />
+          </div>
+          <div class="form-group" style="flex:1;">
+            <label style="font-weight: 600; font-size: 13px; color: #334155; margin-bottom: 6px; display: block;">Giờ Đóng Cửa (Hàng ngày)</label>
+            <input type="time" class="form-control" id="stCloseTime" value="${set.closeTime}" />
+          </div>
+        </div>
+
+        <div class="form-group" style="margin-bottom: 16px;">
+          <label style="font-weight: 600; font-size: 13px; color: #334155; margin-bottom: 6px; display: block;">Bước Khung Giờ Đặt Lịch (Slot Step)</label>
+          <select class="form-control" id="stSlotStep">
+            <option value="15" ${set.slotStep === 15 ? 'selected' : ''}>15 Phút</option>
+            <option value="30" ${set.slotStep === 30 ? 'selected' : ''}>30 Phút (Mặc định)</option>
+            <option value="60" ${set.slotStep === 60 ? 'selected' : ''}>60 Phút</option>
+          </select>
+        </div>
+
+        <div class="form-group" style="margin-bottom: 16px;">
+          <label style="font-weight: 600; font-size: 13px; color: #334155; margin-bottom: 6px; display: block;">Số Phòng Có Thể Phục Vụ Cùng Lúc</label>
+          <input type="number" class="form-control" id="stRoomCount" value="${Number(set.roomCount) || 0}" min="0" max="100" step="1" />
+          <small style="color:#64748b; font-size: 12px; display: block; margin-top: 4px;">Nhập số phòng thực tế để giới hạn lịch trùng giờ giữa các chuyên viên. Để 0 nếu không giới hạn phòng.</small>
+        </div>
+
+        <div class="form-group" style="margin-bottom: 16px;">
+          <label style="font-weight: 600; font-size: 13px; color: #334155; margin-bottom: 6px; display: block;">Kênh Nhắn Tin Ưu Tiên</label>
+          <select class="form-control" id="stNotificationChannel">
+            <option value="zalo" ${set.notificationChannel === 'zalo' ? 'selected' : ''}>Zalo</option>
+            <option value="sms" ${set.notificationChannel === 'sms' ? 'selected' : ''}>SMS</option>
+            <option value="email" ${set.notificationChannel === 'email' ? 'selected' : ''}>Email</option>
+          </select>
+          <small style="color:#64748b; font-size: 12px; display: block; margin-top: 4px;">Nút tin nhắn sẽ mở kênh đã chọn để bạn gửi nội dung mẫu cho khách.</small>
+        </div>
+
+        <div class="form-group" style="margin-bottom: 20px;">
+          <label style="font-weight: 600; font-size: 13px; color: #334155; margin-bottom: 6px; display: block;">Giới Hạn Hủy Lịch Trước (Tiếng)</label>
+          <input type="number" class="form-control" id="stCancelHours" value="${set.cancelBeforeHours ?? 2}" min="0" step="1" />
+          <small style="color:#64748b; font-size: 12px; display: block; margin-top: 4px;">Khách hàng chỉ được hủy lịch trực tuyến trước giờ hẹn tối thiểu số tiếng này.</small>
+        </div>
+
+        <button type="button" class="btn-primary" id="saveSettingsBtn" style="padding: 12px 28px; width: 100%; font-size: 14px;">
+          Lưu Cài Đặt Hệ Thống
+        </button>
+      </div>
+
+      <!-- Cột Phải: Bảo Mật Tài Khoản & Thông Tin Hệ Thống -->
+      <div style="display: flex; flex-direction: column; gap: 24px;">
+        <div style="background: #fff; padding: 28px; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.04); border: 1px solid #f1f5f9;">
+          <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px;">
+            <div style="width: 36px; height: 36px; border-radius: 8px; background: #fef2f2; color: #dc2626; display: flex; align-items: center; justify-content: center; font-size: 18px;">🔑</div>
+            <div>
+              <h4 style="font-family: var(--font-heading); margin: 0; color: var(--text-dark); font-size: 1.15rem;">Đổi Mật Khẩu Quản Trị</h4>
+              <p style="font-size: 12px; color: #64748b; margin: 2px 0 0 0;">Cập nhật mật khẩu quản trị viên hiện tại</p>
+            </div>
+          </div>
+          <div class="form-group" style="margin-bottom: 14px;">
+            <label for="adminOldPasswordInput" style="font-weight: 600; font-size: 13px; color: #334155; margin-bottom: 6px; display: block;">Mật khẩu hiện tại</label>
+            <input type="password" class="form-control" id="adminOldPasswordInput" autocomplete="current-password" placeholder="Nhập mật khẩu đang dùng..." />
+          </div>
+          <div class="form-group" style="margin-bottom: 14px;">
+            <label for="adminNewPasswordInput" style="font-weight: 600; font-size: 13px; color: #334155; margin-bottom: 6px; display: block;">Mật khẩu mới</label>
+            <input type="password" class="form-control" id="adminNewPasswordInput" autocomplete="new-password" minlength="8" placeholder="Nhập mật khẩu mới..." />
+            <small style="display:block;margin-top:5px;color:#64748b;font-size:12px;">Tối thiểu 8 ký tự, gồm ít nhất 1 chữ số và 1 ký tự đặc biệt.</small>
+          </div>
+          <div class="form-group" style="margin-bottom: 20px;">
+            <label for="adminConfirmPasswordInput" style="font-weight: 600; font-size: 13px; color: #334155; margin-bottom: 6px; display: block;">Xác nhận mật khẩu mới</label>
+            <input type="password" class="form-control" id="adminConfirmPasswordInput" autocomplete="new-password" minlength="8" placeholder="Nhập lại mật khẩu mới..." />
+          </div>
+          <button type="button" class="btn-outline" id="adminSavePasswordBtn" style="width: 100%; padding: 11px 20px; font-size: 14px;">Cập Nhật Mật Khẩu Quản Trị</button>
+        </div>
+
+        <div style="background: #fdfbf7; border: 1px dashed #d6c7b2; border-radius: 12px; padding: 22px; display: flex; gap: 14px; align-items: flex-start;">
+          <span style="font-size: 26px; line-height: 1;">🛡️</span>
+          <div style="font-size: 13px; color: #574838; line-height: 1.6;">
+            <strong>Lưu Ý Vận Hành Quản Trị</strong><br />
+            - Khi thay đổi giờ mở cửa hoặc bước khung giờ đặt lịch, hệ thống sẽ tự động cập nhật bảng giờ trống (slot picker) cho toàn bộ khách hàng trên website.<br />
+            - Nếu cần tạm đóng spa cho ngày nghỉ lễ, bạn có thể tạo chiến dịch khuyến mãi hoặc thông báo qua kênh Zalo/SMS.
+          </div>
         </div>
       </div>
-
-      <div class="form-group">
-        <label>Bước Khung Giờ Đặt Lịch (Slot Step)</label>
-        <select class="form-control" id="stSlotStep">
-          <option value="15" ${set.slotStep === 15 ? 'selected' : ''}>15 Phút</option>
-          <option value="30" ${set.slotStep === 30 ? 'selected' : ''}>30 Phút (Mặc định)</option>
-          <option value="60" ${set.slotStep === 60 ? 'selected' : ''}>60 Phút</option>
-        </select>
-      </div>
-
-      <div class="form-group">
-        <label>Số Phòng Có Thể Phục Vụ Cùng Lúc</label>
-        <input type="number" class="form-control" id="stRoomCount" value="${Number(set.roomCount) || 0}" min="0" max="100" step="1" />
-        <small style="color:#64748b;">Nhập số phòng thực tế để giới hạn lịch trùng giờ giữa các chuyên viên. Để 0 nếu không giới hạn phòng.</small>
-      </div>
-
-      <div class="form-group">
-        <label>Kênh Nhắn Tin Ưu Tiên</label>
-        <select class="form-control" id="stNotificationChannel">
-          <option value="zalo" ${set.notificationChannel === 'zalo' ? 'selected' : ''}>Zalo</option>
-          <option value="sms" ${set.notificationChannel === 'sms' ? 'selected' : ''}>SMS</option>
-          <option value="email" ${set.notificationChannel === 'email' ? 'selected' : ''}>Email</option>
-        </select>
-        <small style="color:#64748b;">Nút tin nhắn sẽ mở kênh đã chọn để bạn gửi nội dung mẫu cho khách.</small>
-      </div>
-
-      <div class="form-group">
-        <label>Giới Hạn Hủy Lịch Trước (Tiếng)</label>
-        <input type="number" class="form-control" id="stCancelHours" value="${set.cancelBeforeHours ?? 2}" min="0" step="1" />
-        <small style="color:#64748b;">Khách hàng chỉ được hủy lịch trực tuyến trước giờ hẹn tối thiểu số tiếng này.</small>
-      </div>
-
-      <button type="button" class="btn-primary" id="saveSettingsBtn" style="padding: 12px 30px; margin-top: 15px;">
-        Lưu Cài Đặt Hệ Thống
-      </button>
-
-      <hr style="border:0;border-top:1px solid var(--border-light);margin:28px 0;" />
-      <h4 style="font-family:var(--font-heading);margin-bottom:14px;color:var(--text-dark);">🔑 Đổi Mật Khẩu Tài Khoản Quản Trị</h4>
-      <div class="form-group">
-        <label for="adminOldPasswordInput">Mật khẩu hiện tại</label>
-        <input type="password" class="form-control" id="adminOldPasswordInput" autocomplete="current-password" />
-      </div>
-      <div class="form-group">
-        <label for="adminNewPasswordInput">Mật khẩu mới</label>
-        <input type="password" class="form-control" id="adminNewPasswordInput" autocomplete="new-password" minlength="8" />
-        <small style="display:block;margin-top:6px;color:#64748b;">Tối thiểu 8 ký tự, gồm ít nhất 1 chữ số và 1 ký tự đặc biệt.</small>
-      </div>
-      <div class="form-group">
-        <label for="adminConfirmPasswordInput">Xác nhận mật khẩu mới</label>
-        <input type="password" class="form-control" id="adminConfirmPasswordInput" autocomplete="new-password" minlength="8" />
-      </div>
-      <button type="button" class="btn-outline" id="adminSavePasswordBtn">Cập Nhật Mật Khẩu Quản Trị</button>
     </div>
   `;
 
