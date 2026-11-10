@@ -538,40 +538,130 @@ function renderFavoritesTab(container, currentUser) {
 
 /* ---------------- TAB HỒ SƠ ---------------- */
 function renderProfileTab(container, currentUser) {
+  const bookings = bookingService.byCustomer(currentUser.id, currentUser.phone);
+  const completedCount = bookings.filter((b) => b.status === 'Completed').length;
+  const favorites = favoriteService.list(currentUser.id);
+  const roleBadgeText = currentUser.role === 'admin' ? 'Quản Trị Viên' : (currentUser.role === 'staff' ? 'Chuyên Viên' : 'Khách Hàng');
+
   container.innerHTML = `
-    <div style="background: #fff; border-radius: 8px; padding: 30px; max-width: 500px; box-shadow: 0 2px 10px rgba(0,0,0,0.04);">
-      <h3 style="font-family: var(--font-heading); margin-bottom: 20px; color: var(--text-dark);">Thông Tin Cá Nhân</h3>
-      <div class="form-group">
-        <label>Họ và Tên</label>
-        <input type="text" class="form-control" id="profNameInput" value="${esc(currentUser.name)}" />
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 24px; align-items: start;">
+      <!-- Cột Trái: Thông Tin Cá Nhân & Đổi Mật Khẩu -->
+      <div style="display: flex; flex-direction: column; gap: 24px;">
+        <div style="background: #fff; border-radius: 12px; padding: 28px; box-shadow: 0 2px 12px rgba(0,0,0,0.04); border: 1px solid #f1f5f9;">
+          <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 20px;">
+            <div style="width: 36px; height: 36px; border-radius: 8px; background: #fef3c7; color: #b45309; display: flex; align-items: center; justify-content: center; font-size: 18px;">👤</div>
+            <div>
+              <h3 style="font-family: var(--font-heading); font-size: 1.25rem; color: var(--text-dark); margin: 0;">Thông Tin Cá Nhân</h3>
+              <p style="font-size: 12px; color: #64748b; margin: 2px 0 0 0;">Cập nhật họ tên, số điện thoại và email liên lạc của bạn</p>
+            </div>
+          </div>
+
+          <div class="form-group" style="margin-bottom: 16px;">
+            <label style="font-weight: 600; font-size: 13px; color: #334155; margin-bottom: 6px; display: block;">Họ và Tên</label>
+            <input type="text" class="form-control" id="profNameInput" value="${esc(currentUser.name)}" placeholder="Nhập họ và tên..." />
+          </div>
+          <div class="form-group" style="margin-bottom: 16px;">
+            <label style="font-weight: 600; font-size: 13px; color: #334155; margin-bottom: 6px; display: block;">Số Điện Thoại</label>
+            <input type="tel" class="form-control" id="profPhoneInput" value="${esc(currentUser.phone)}" placeholder="09xxxxxxxx" />
+          </div>
+          <div class="form-group" style="margin-bottom: 20px;">
+            <label style="font-weight: 600; font-size: 13px; color: #334155; margin-bottom: 6px; display: block;">Địa Chỉ Email</label>
+            <input type="email" class="form-control" id="profEmailInput" value="${esc(currentUser.email)}" placeholder="email@example.com" />
+          </div>
+          <button type="button" class="btn-primary" id="saveProfileBtn" style="padding: 11px 24px; font-size: 14px; width: 100%;">
+            Lưu Thay Đổi
+          </button>
+        </div>
+
+        <div style="background: #fff; border-radius: 12px; padding: 28px; box-shadow: 0 2px 12px rgba(0,0,0,0.04); border: 1px solid #f1f5f9;">
+          <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px;">
+            <div style="width: 36px; height: 36px; border-radius: 8px; background: #f1f5f9; color: #475569; display: flex; align-items: center; justify-content: center; font-size: 18px;">🔒</div>
+            <div>
+              <h4 style="font-family: var(--font-heading); font-size: 1.15rem; color: var(--text-dark); margin: 0;">Đổi Mật Khẩu</h4>
+              <p style="font-size: 12px; color: #64748b; margin: 2px 0 0 0;">Bảo mật tài khoản với mật khẩu mạnh</p>
+            </div>
+          </div>
+          <div class="form-group" style="margin-bottom: 14px;">
+            <label for="currentPasswordInput" style="font-weight: 600; font-size: 13px; color: #334155; margin-bottom: 6px; display: block;">Mật khẩu hiện tại</label>
+            <input type="password" class="form-control" id="currentPasswordInput" autocomplete="current-password" placeholder="Nhập mật khẩu đang dùng..." />
+          </div>
+          <div class="form-group" style="margin-bottom: 14px;">
+            <label for="newPasswordInput" style="font-weight: 600; font-size: 13px; color: #334155; margin-bottom: 6px; display: block;">Mật khẩu mới</label>
+            <input type="password" class="form-control" id="newPasswordInput" autocomplete="new-password" minlength="8" placeholder="Nhập mật khẩu mới..." />
+            <small style="display: block; margin-top: 5px; color: #64748b; font-size: 12px;">Ít nhất 8 ký tự, gồm một chữ số và một ký tự đặc biệt.</small>
+          </div>
+          <div class="form-group" style="margin-bottom: 20px;">
+            <label for="confirmNewPasswordInput" style="font-weight: 600; font-size: 13px; color: #334155; margin-bottom: 6px; display: block;">Xác nhận mật khẩu mới</label>
+            <input type="password" class="form-control" id="confirmNewPasswordInput" autocomplete="new-password" minlength="8" placeholder="Nhập lại mật khẩu mới..." />
+          </div>
+          <button type="button" class="btn-outline" id="changePasswordBtn" style="width: 100%; padding: 11px 20px; font-size: 14px;">
+            Cập Nhật Mật Khẩu
+          </button>
+        </div>
       </div>
-      <div class="form-group">
-        <label>Số Điện Thoại</label>
-        <input type="tel" class="form-control" id="profPhoneInput" value="${esc(currentUser.phone)}" />
+
+      <!-- Cột Phải: Thẻ Thành Viên & Hoạt Động & Lối Tắt -->
+      <div style="display: flex; flex-direction: column; gap: 24px;">
+        <!-- Thẻ Tổng Quan Tài Khoản -->
+        <div style="background: linear-gradient(135deg, #3d271d 0%, #291a13 100%); color: #fff; border-radius: 12px; padding: 28px; box-shadow: 0 6px 20px rgba(41,26,19,0.15); position: relative; overflow: hidden;">
+          <div style="position: absolute; right: -20px; bottom: -20px; font-size: 130px; opacity: 0.06; line-height: 1; user-select: none;">✿</div>
+          <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 24px;">
+            <div style="width: 60px; height: 60px; border-radius: 50%; background: rgba(255,255,255,0.15); border: 2px solid rgba(255,255,255,0.3); display: flex; align-items: center; justify-content: center; font-size: 26px; font-weight: bold; color: #fef3c7;">
+              ${currentUser.name.charAt(0).toUpperCase()}
+            </div>
+            <div>
+              <div style="font-size: 18px; font-weight: bold; letter-spacing: 0.3px;">${esc(currentUser.name)}</div>
+              <div style="font-size: 13px; color: rgba(255,255,255,0.7); margin-top: 2px;">${esc(currentUser.email)}</div>
+              <span style="display: inline-block; margin-top: 8px; font-size: 11px; padding: 3px 10px; border-radius: 999px; background: rgba(255,255,255,0.18); color: #fde68a; font-weight: 600; letter-spacing: 0.5px;">
+                ${roleBadgeText}
+              </span>
+            </div>
+          </div>
+
+          <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; background: rgba(0,0,0,0.2); border-radius: 8px; padding: 14px; text-align: center;">
+            <div>
+              <div style="font-size: 20px; font-weight: bold; color: #fde68a;">${bookings.length}</div>
+              <div style="font-size: 11px; color: rgba(255,255,255,0.75); margin-top: 2px;">Tổng lịch hẹn</div>
+            </div>
+            <div>
+              <div style="font-size: 20px; font-weight: bold; color: #86efac;">${completedCount}</div>
+              <div style="font-size: 11px; color: rgba(255,255,255,0.75); margin-top: 2px;">Đã hoàn thành</div>
+            </div>
+            <div>
+              <div style="font-size: 20px; font-weight: bold; color: #f472b6;">${favorites.length}</div>
+              <div style="font-size: 11px; color: rgba(255,255,255,0.75); margin-top: 2px;">Yêu thích</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Khối Tiện Ích & Lối Tắt Nhanh -->
+        <div style="background: #fff; border-radius: 12px; padding: 26px; box-shadow: 0 2px 12px rgba(0,0,0,0.04); border: 1px solid #f1f5f9;">
+          <h4 style="font-family: var(--font-heading); font-size: 1.15rem; color: var(--text-dark); margin: 0 0 16px 0;">Lối Tắt Nhanh</h4>
+          <div style="display: flex; flex-direction: column; gap: 10px;">
+            <a href="/dat-lich" class="btn-outline" style="display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-radius: 8px; text-decoration: none; font-size: 13.5px; color: var(--text-dark);">
+              <span>📅 Đặt lịch trị liệu mới</span>
+              <span style="color: #94a3b8;">→</span>
+            </a>
+            <a href="/dich-vu" class="btn-outline" style="display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-radius: 8px; text-decoration: none; font-size: 13.5px; color: var(--text-dark);">
+              <span>💆 Khám phá bảng giá & dịch vụ</span>
+              <span style="color: #94a3b8;">→</span>
+            </a>
+            <a href="/nhac" class="btn-outline" style="display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-radius: 8px; text-decoration: none; font-size: 13.5px; color: var(--text-dark);">
+              <span>♫ Không gian âm nhạc thư giãn</span>
+              <span style="color: #94a3b8;">→</span>
+            </a>
+          </div>
+        </div>
+
+        <!-- Cam Kết Dịch Vụ -->
+        <div style="background: #fdfbf7; border: 1px dashed #d6c7b2; border-radius: 12px; padding: 20px 22px; display: flex; gap: 14px; align-items: flex-start;">
+          <span style="font-size: 24px; line-height: 1;">🌿</span>
+          <div style="font-size: 13px; color: #574838; line-height: 1.6;">
+            <strong>Chính Sách Chăm Sóc Serenity</strong><br />
+            Quý khách có thể hủy hoặc dời lịch hẹn trước tối thiểu 2 giờ mà không phát sinh thêm chi phí. Nếu cần hỗ trợ đặc biệt, hãy liên hệ hotline hoặc gửi tin nhắn cho Serenity Spa.
+          </div>
+        </div>
       </div>
-      <div class="form-group">
-        <label>Địa Chỉ Email</label>
-        <input type="email" class="form-control" id="profEmailInput" value="${esc(currentUser.email)}" />
-      </div>
-      <button type="button" class="btn-primary" id="saveProfileBtn" style="padding: 12px 25px; margin-top: 10px;">
-        Lưu Thay Đổi
-      </button>
-      <hr style="border:0;border-top:1px solid var(--border-light);margin:25px 0;" />
-      <h4 style="font-family:var(--font-heading);margin-bottom:14px;color:var(--text-dark);">Đổi Mật Khẩu</h4>
-      <div class="form-group">
-        <label for="currentPasswordInput">Mật khẩu hiện tại</label>
-        <input type="password" class="form-control" id="currentPasswordInput" autocomplete="current-password" />
-      </div>
-      <div class="form-group">
-        <label for="newPasswordInput">Mật khẩu mới</label>
-        <input type="password" class="form-control" id="newPasswordInput" autocomplete="new-password" minlength="8" />
-        <small style="display:block;margin-top:6px;color:#64748b;">Ít nhất 8 ký tự, gồm một chữ số và một ký tự đặc biệt.</small>
-      </div>
-      <div class="form-group">
-        <label for="confirmNewPasswordInput">Xác nhận mật khẩu mới</label>
-        <input type="password" class="form-control" id="confirmNewPasswordInput" autocomplete="new-password" minlength="8" />
-      </div>
-      <button type="button" class="btn-outline" id="changePasswordBtn">Cập Nhật Mật Khẩu</button>
     </div>
   `;
 
