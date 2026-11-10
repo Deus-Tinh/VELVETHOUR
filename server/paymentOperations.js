@@ -9,14 +9,20 @@ export function paymentConfig(env = process.env) {
   const accountNumber = digits(env.SEPAY_ACCOUNT_NUMBER);
   const accountHolder = String(env.SEPAY_ACCOUNT_HOLDER || '').trim().toUpperCase();
   const webhookApiKey = String(env.SEPAY_WEBHOOK_API_KEY || '').trim();
-  const enabled = String(env.SEPAY_ENABLED || '').trim().toLowerCase() === 'true';
+  const sepayEnabled = String(env.SEPAY_ENABLED || '').trim().toLowerCase() === 'true';
+  const directEnabled = String(env.VIETQR_DIRECT_ENABLED || '').trim().toLowerCase() === 'true';
   const accountReady = Boolean(bankName && accountNumber.length >= 6 && accountNumber.length <= 19
     && /^[A-Z ]{5,50}$/.test(accountHolder));
+  const sepayReady = sepayEnabled && accountReady && webhookApiKey.length >= 24;
+  const directReady = directEnabled && accountReady;
+  const ready = sepayReady || directReady;
+  const mode = sepayReady ? 'sepay' : directReady ? 'direct_manual' : 'disabled';
   return {
     bankName, accountNumber, accountHolder, webhookApiKey,
-    ready: enabled && accountReady && webhookApiKey.length >= 24,
+    ready,
     configured: accountReady,
-    enabled,
+    enabled: ready,
+    mode,
     holdSeconds: PAYMENT_HOLD_SECONDS,
     cardEnabled: false,
   };
@@ -26,12 +32,13 @@ export function publicPaymentConfig(env = process.env) {
   const config = paymentConfig(env);
   return {
     enabled: config.ready,
+    mode: config.mode,
     bankName: config.ready ? config.bankName : null,
     accountNumber: config.ready ? config.accountNumber : null,
     accountHolder: config.ready ? config.accountHolder : null,
     holdSeconds: config.holdSeconds,
     cardEnabled: false,
-    unavailableMessage: config.ready ? null : 'Thanh toán QR đang chờ quản trị viên hoàn tất cấu hình bảo mật SePay.',
+    unavailableMessage: config.ready ? null : 'Thanh toán QR đang chờ quản trị viên hoàn tất cấu hình bảo mật SePay hoặc VietQR.',
   };
 }
 
@@ -61,6 +68,7 @@ export function paymentInstructions(booking, env = process.env, overrides = {}) 
   });
   return {
     method: 'bank',
+    mode: config.mode,
     bankName: config.bankName,
     accountNumber: config.accountNumber,
     accountHolder: config.accountHolder,
@@ -69,7 +77,9 @@ export function paymentInstructions(booking, env = process.env, overrides = {}) 
     expiresAt,
     qrUrl: `https://vietqr.app/img?${params.toString()}`,
     holdSeconds: config.holdSeconds,
-    warning: 'Nếu chuyển thiếu hoặc sai mã, đơn không được tiếp tục và chúng tôi sẽ không hoàn tiền lại.',
+    warning: config.mode === 'direct_manual'
+      ? 'Vui lòng chuyển chính xác số tiền và mã nội dung. Sau khi chuyển xong, bấm nút "Tôi đã chuyển khoản" để Spa xác nhận lịch.'
+      : 'Nếu chuyển thiếu hoặc sai mã, đơn không được tiếp tục và chúng tôi sẽ không hoàn tiền lại.',
   };
 }
 
@@ -369,6 +379,7 @@ export function createPaymentOperations({ db, getRecord, parseRows, saveRecord, 
       bookingCode: booking.code,
       bookingStatus: booking.status,
       paymentStatus: booking.paymentStatus || 'legacy',
+      customerTransferReport: booking.customerTransferReport || null,
       reschedulePaymentStatus: booking.reschedulePaymentRequest ? 'awaiting_payment'
         : booking.lastReschedulePaymentStatus || null,
       reschedulePayment: booking.reschedulePaymentRequest ? {
@@ -420,7 +431,8 @@ export function createPaymentOperations({ db, getRecord, parseRows, saveRecord, 
       .slice(0, 300)
       .map((booking) => ({ id: booking.id, code: booking.code, customerName: booking.customerName,
         customerPhone: booking.customerPhone, serviceName: booking.serviceName, amount: Number(booking.finalPrice || 0),
-        status: booking.status, paymentStatus: booking.paymentStatus }));
+        status: booking.status, paymentStatus: booking.paymentStatus, paymentCode: booking.paymentCode,
+        customerTransferReport: booking.customerTransferReport || null, createdAt: booking.createdAt }));
     return { events, refunds, bookings, payment: publicPaymentConfig(env) };
   }
 

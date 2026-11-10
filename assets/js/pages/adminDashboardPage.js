@@ -432,11 +432,28 @@ async function renderTabReconciliation(container) {
   const events = data.events || [];
   const refunds = data.refunds || [];
   const reconcileBookings = data.bookings || [];
+  const pendingVietQr = reconcileBookings.filter((b) => b.status === 'Pending' || b.paymentStatus === 'payment_submitted');
   container.innerHTML = `
     <section style="padding:18px 20px;background:#fff;border:1px solid #e2e8f0;border-radius:10px;margin-bottom:18px;">
       <h3 style="margin:0 0 6px;">Trạng thái nhận tiền</h3>
-      <p style="margin:0;color:${data.payment?.enabled ? '#087f6e' : '#b42318'};">${data.payment?.enabled ? 'SePay đã cấu hình sẵn sàng nhận giao dịch.' : esc(data.payment?.unavailableMessage || 'Cấu hình thanh toán chưa hoàn tất.')}</p>
-      <small style="display:block;margin-top:7px;color:#64748b;">QR chờ tối đa 3 phút · Webhook cần URL HTTPS công khai · Thanh toán thẻ đang khóa.</small>
+      <p style="margin:0;color:${data.payment?.enabled ? '#087f6e' : '#b42318'};">${data.payment?.enabled ? (data.payment?.mode === 'direct_manual' ? 'Chuyển khoản VietQR Trực Tiếp (Techcombank) đang BẬT · Duyệt thủ công miễn phí.' : 'SePay đã cấu hình sẵn sàng nhận giao dịch tự động.') : esc(data.payment?.unavailableMessage || 'Cấu hình thanh toán chưa hoàn tất.')}</p>
+      <small style="display:block;margin-top:7px;color:#64748b;">Khách quét mã VietQR chuyển khoản vào Techcombank ${esc(data.payment?.accountNumber || '')} · Lễ tân kiểm tra app ngân hàng và bấm duyệt.</small>
+    </section>
+    <section style="padding:18px 20px;background:#fff;border:1px solid #bbf7d0;border-radius:10px;margin-bottom:18px;background:#f0fdf4;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <h3 style="margin:0;color:#166534;">🏦 Đơn Chuyển Khoản VietQR Chờ Duyệt (${pendingVietQr.length})</h3>
+        <span style="font-size:12px;color:#15803d;">Quét QR Techcombank 19077430861011</span>
+      </div>
+      ${pendingVietQr.length ? `<div class="data-table-wrap"><table class="data-table"><thead><tr><th>Đơn / Khách</th><th>Liệu trình</th><th>Cần thu</th><th>Mã VietQR</th><th>Trạng thái</th><th>Thao tác</th></tr></thead><tbody>
+        ${pendingVietQr.map((item) => `<tr>
+          <td><strong>${esc(item.code)}</strong><br /><small>${esc(item.customerName)} · ${esc(item.customerPhone)}</small></td>
+          <td>${esc(item.serviceName)}</td>
+          <td><strong style="color:#087f6e;">${formatVND(item.amount)}</strong></td>
+          <td><strong style="color:#0f4c81;letter-spacing:.05em;">${esc(item.paymentCode)}</strong></td>
+          <td>${item.paymentStatus === 'payment_submitted' ? '<span class="badge-status badge-confirmed" style="background:#ecfdf5;color:#087f6e;">✓ Khách đã báo chuyển</span>' : '<span class="badge-status badge-pending">Chờ khách chuyển</span>'}${item.customerTransferReport?.reference ? `<br /><small>Mã ref: ${esc(item.customerTransferReport.reference)}</small>` : ''}</td>
+          <td><button type="button" class="btn-sm btn-primary confirm-manual-transfer-btn" data-id="${esc(item.id)}" data-code="${esc(item.code)}" data-amount="${Number(item.amount)}">✓ Xác Nhận Đã Nhận Tiền</button></td>
+        </tr>`).join('')}
+      </tbody></table></div>` : '<p style="color:#166534;margin:0;">Hiện không có đơn nào đang chờ duyệt chuyển khoản.</p>'}
     </section>
     <section style="padding:18px 20px;background:#fff;border:1px solid #e2e8f0;border-radius:10px;margin-bottom:18px;">
       <h3 style="margin:0 0 12px;">Yêu cầu hoàn tiền (${refunds.filter((item) => item.status === 'pending').length} đang chờ)</h3>
@@ -496,6 +513,23 @@ async function renderTabReconciliation(container) {
   container.querySelectorAll('.issue-refund-btn').forEach((button) => button.addEventListener('click', () => {
     openIssueRefundForm({ providerTransactionId: button.dataset.eventId, bookingCode: button.dataset.code,
       maxAmount: Number(button.dataset.amount) }, container);
+  }));
+  container.querySelectorAll('.confirm-manual-transfer-btn').forEach((button) => button.addEventListener('click', async () => {
+    const bookingId = button.dataset.id;
+    const bookingCode = button.dataset.code;
+    const amount = Number(button.dataset.amount);
+    if (!confirm(`Xác nhận đã nhận đủ ${formatVND(amount)} từ đơn ${bookingCode}? Lịch hẹn sẽ được chuyển sang Đã Xác Nhận.`)) return;
+    button.disabled = true;
+    button.textContent = 'Đang duyệt…';
+    try {
+      await apiClient.confirmManualBookingPayment(bookingId, { note: 'Admin duyệt đã nhận đủ tiền chuyển khoản VietQR' });
+      showToast(`Đã xác nhận thanh toán cho đơn ${bookingCode}!`, 'success');
+      await renderTabReconciliation(container);
+    } catch (err) {
+      showToast(err.message || 'Không thể duyệt đơn.', 'danger');
+      button.disabled = false;
+      button.textContent = '✓ Xác Nhận Đã Nhận Tiền';
+    }
   }));
 }
 

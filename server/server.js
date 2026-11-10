@@ -1816,6 +1816,58 @@ async function routeApi(request, response, url) {
     await backupIfDue();
     return respond(response, 200, { booking: updated, refundRequest: updated.refundRequest });
   }
+  const confirmTransferRoute = pathname.match(/^\/api\/admin\/bookings\/([^/]+)\/confirm-transfer$/);
+  if (method === 'POST' && confirmTransferRoute) {
+    assertOrigin(request);
+    const actor = requireActor(request, ['admin']);
+    const id = decodeURIComponent(confirmTransferRoute[1]);
+    const body = await readBody(request, 16 * 1024).catch(() => ({}));
+    const booking = getRecord('bookings', id);
+    if (!booking) throw new HttpError(404, 'Không tìm thấy lịch hẹn.', 'NOT_FOUND');
+    const now = new Date().toISOString();
+    const amount = Number(body?.amount || booking.finalPrice || 0);
+    const reference = String(body?.referenceCode || booking.paymentCode || '').trim().slice(0, 120);
+    const note = String(body?.note || 'Admin duyệt nhận chuyển khoản VietQR.').trim().slice(0, 300);
+    const entry = {
+      id: `pay_manual_${Date.now()}`,
+      type: 'payment',
+      amount,
+      method: 'bank',
+      reference,
+      note,
+      at: now,
+      recordedBy: actor.id,
+    };
+    const updated = {
+      ...booking,
+      status: 'Confirmed',
+      paymentStatus: 'paid',
+      paymentPaidAt: now,
+      paymentRecords: [...(booking.paymentRecords || []), entry],
+      invoiceSnapshot: {
+        number: `HD-${booking.code || booking.id}`,
+        issuedAt: now,
+        customer: { name: booking.customerName || '', phone: booking.customerPhone || '', email: booking.customerEmail || '' },
+        booking: {
+          code: booking.code || '', serviceName: booking.serviceName || '', date: booking.date || '',
+          startTime: booking.startTime || '', endTime: booking.endTime || '', duration: Number(booking.duration) || 0,
+          staffName: booking.staffName || '', roomNumber: booking.roomNumber || null,
+          originalPrice: Number(booking.originalPrice) || 0, discountAmount: Number(booking.discountAmount) || 0,
+          total: amount,
+        },
+        payment: { method: 'Chuyển khoản VietQR', amount, reference, paidAt: now },
+      },
+      statusHistory: [...(booking.statusHistory || []), { status: 'Confirmed', at: now, by: actor.id, reason: 'Admin xác nhận đã nhận đủ tiền chuyển khoản VietQR.' }],
+      updatedAt: now,
+    };
+    transaction(() => {
+      saveRecord('bookings', updated);
+      nextVersion('bookings');
+      withAudit(actor, 'booking.payment.confirmed_manual', id, { amount, bookingCode: booking.code });
+    });
+    await backupIfDue();
+    return respond(response, 200, { ok: true, booking: updated });
+  }
   const packageImageId = pathname.match(/^\/api\/package-images\/([0-9a-f-]{36})$/i)?.[1];
   if (method === 'GET' && packageImageId) {
     const image = q.packageImage.get(packageImageId);
@@ -2658,7 +2710,7 @@ async function routeApi(request, response, url) {
     const expiredCount = paymentOperations.expirePendingPayments();
     const current = getRecord('bookings', id) || booking;
     if (expiredCount) await backupIfDue();
-    const mayPay = current.status === 'Pending' && current.paymentStatus === 'awaiting_payment'
+    const mayPay = current.status === 'Pending' && ['awaiting_payment', 'payment_submitted'].includes(current.paymentStatus)
       && Date.parse(current.paymentExpiresAt || '') > Date.now();
     const adjustment = current.reschedulePaymentRequest;
     const adjustmentMayPay = adjustment && Date.parse(adjustment.expiresAt || '') > Date.now();
@@ -2666,6 +2718,39 @@ async function routeApi(request, response, url) {
       ? paymentInstructions(current, process.env, { amount: adjustment.amount, expiresAt: adjustment.expiresAt })
       : mayPay ? paymentInstructions(current) : null;
     return respond(response, 200, { payment: paymentOperations.paymentStatusFor(current), instructions });
+  }
+
+  const notifyTransferRoute = pathname.match(/^\/api\/bookings\/([^/]+)\/notify-transfer$/);
+  if (method === 'POST' && notifyTransferRoute) {
+    assertOrigin(request);
+    const actor = actorFrom(request);
+    if (!actor) throw new HttpError(401, 'Vui lòng đăng nhập trước khi thực hiện thao tác.', 'UNAUTHORIZED');
+    const id = decodeURIComponent(notifyTransferRoute[1]);
+    const body = await readBody(request, 16 * 1024).catch(() => ({}));
+    const booking = getRecord('bookings', id);
+    if (!booking) throw new HttpError(404, 'Không tìm thấy lịch hẹn.', 'NOT_FOUND');
+    if (actor.role === 'customer' && booking.userId !== actor.id) {
+      throw new HttpError(403, 'Bạn không có quyền thông báo cho đơn này.', 'FORBIDDEN');
+    }
+    const now = new Date().toISOString();
+    const reference = String(body?.referenceCode || '').trim().slice(0, 100);
+    const note = String(body?.transferNote || '').trim().slice(0, 300);
+    const extendedExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    const updated = {
+      ...booking,
+      paymentStatus: 'payment_submitted',
+      paymentExpiresAt: extendedExpiry,
+      customerTransferReport: { at: now, reference, note },
+      updatedAt: now,
+      statusHistory: [...(booking.statusHistory || []), { status: booking.status, at: now, by: actor.id, reason: 'Khách hàng thông báo đã chuyển khoản thành công.' }],
+    };
+    transaction(() => {
+      saveRecord('bookings', updated);
+      nextVersion('bookings');
+      withAudit(actor, 'booking.payment.transfer_reported', id, { reference, bookingCode: booking.code });
+    });
+    await backupIfDue();
+    return respond(response, 200, { ok: true, booking: updated });
   }
 
   if (method === 'POST' && pathname === '/api/bookings') {

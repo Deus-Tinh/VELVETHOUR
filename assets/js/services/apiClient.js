@@ -397,6 +397,20 @@ export const apiClient = {
   async createBooking(payload) { const result = await request('/bookings', { method: 'POST', body: JSON.stringify(payload) }); rememberBooking(result.booking); return result; },
   async getPaymentConfig() { return request('/payment/config'); },
   async getBookingPayment(id) { return request(`/bookings/${encodeURIComponent(id)}/payment`); },
+  async notifyBookingTransfer(id, payload = {}) {
+    const result = await request(`/bookings/${encodeURIComponent(id)}/notify-transfer`, {
+      method: 'POST', body: JSON.stringify(payload),
+    });
+    rememberBooking(result.booking);
+    return result;
+  },
+  async confirmManualBookingPayment(id, payload = {}) {
+    const result = await request(`/admin/bookings/${encodeURIComponent(id)}/confirm-transfer`, {
+      method: 'POST', body: JSON.stringify(payload),
+    });
+    rememberBooking(result.booking);
+    return result;
+  },
   async getBookingInvoice(id) { return request(`/bookings/${encodeURIComponent(id)}/invoice`); },
   async getPaymentReconciliation() { return request('/admin/payments/reconciliation'); },
   async linkUnmatchedPayment({ providerTransactionId, bookingId }) {

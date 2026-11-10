@@ -124,6 +124,14 @@ export async function renderPaymentCheckout(container, booking, initialInstructi
           <button type="button" class="btn-outline" data-copy-payment="${esc(instructions.accountNumber)}">Sao chép số tài khoản</button>
           <button type="button" class="btn-outline" data-copy-payment="${esc(instructions.paymentCode)}">Sao chép mã chuyển khoản</button>
         </div>
+        <div style="margin-top:14px;padding:12px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;text-align:center;">
+          <button type="button" id="notifyTransferBtn" class="btn-primary" style="width:100%;padding:11px;font-size:14px;font-weight:700;">
+            ✓ Tôi Đã Chuyển Khoản Xong
+          </button>
+          <small style="display:block;margin-top:6px;color:#166534;font-size:12px;">
+            Sau khi chuyển tiền trên app ngân hàng, bấm nút này để Spa kiểm tra và duyệt lịch cho bạn.
+          </small>
+        </div>
         <p style="margin:14px 0 7px;padding:12px;background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;color:#9a3412;font-size:13px;line-height:1.55;">${esc(instructions.warning)}</p>
         <p style="margin:0;color:#64748b;font-size:13px;line-height:1.55;">Đơn ${esc(booking.code)} · ${esc(booking.serviceName)} · ${esc(formatDate(booking.date))} lúc ${esc(booking.startTime)}<br />${esc(booking.staffName || '')}</p>
         <div id="paymentStatusMessage" aria-live="polite" style="margin-top:12px;padding:11px;border-radius:8px;background:#ecfdf5;color:#087f6e;font-size:13px;">Đang chờ hệ thống ngân hàng ghi nhận giao dịch…</div>
@@ -137,6 +145,39 @@ export async function renderPaymentCheckout(container, booking, initialInstructi
       ${booking.reschedulePayment ? `<div class="summary-row"><span>Đã thanh toán trước</span><span>${formatVND(booking.reschedulePriorPaid)}</span></div><div class="summary-row total"><span>Thanh toán thêm</span><strong>${formatVND(instructions.amount)}</strong></div>` : `<div class="summary-row total"><span>Tổng cần thanh toán</span><strong>${formatVND(booking.finalPrice)}</strong></div>`}
     </section>
   `;
+
+  const notifyBtn = container.querySelector('#notifyTransferBtn');
+  if (notifyBtn) {
+    if (booking.paymentStatus === 'payment_submitted') {
+      notifyBtn.disabled = true;
+      notifyBtn.textContent = '✓ Đã Báo Chuyển Tiền';
+      notifyBtn.style.background = '#059669';
+    }
+    notifyBtn.addEventListener('click', async () => {
+      notifyBtn.disabled = true;
+      notifyBtn.textContent = 'Đang gửi thông báo…';
+      try {
+        await apiClient.notifyBookingTransfer(booking.id);
+        notifyBtn.textContent = '✓ Đã Báo Chuyển Tiền';
+        notifyBtn.style.background = '#059669';
+        const stMsg = document.getElementById('paymentStatusMessage');
+        const cDown = document.getElementById('paymentCountdown');
+        if (stMsg) {
+          stMsg.innerHTML = '<strong>Đã ghi nhận thông tin chuyển khoản!</strong><br />Lễ tân đang kiểm tra giao dịch qua Techcombank và sẽ xác nhận lịch hẹn của bạn trong ít phút.';
+          stMsg.style.background = '#ecfdf5';
+          stMsg.style.color = '#065f46';
+        }
+        if (cDown) {
+          cDown.textContent = 'Đang chờ lễ tân xác nhận';
+          cDown.style.background = '#eff6ff';
+          cDown.style.color = '#1d4ed8';
+        }
+      } catch (err) {
+        notifyBtn.disabled = false;
+        notifyBtn.textContent = '✓ Tôi Đã Chuyển Khoản Xong';
+      }
+    });
+  }
 
   container.querySelectorAll('[data-copy-payment]').forEach((button) => button.addEventListener('click', async () => {
     try {
@@ -177,6 +218,17 @@ export async function renderPaymentCheckout(container, booking, initialInstructi
       if (current.paymentStatus === 'paid') {
         stopTimers();
         renderResult(container, { ...booking, refundRequest: current.refundRequest }, 'paid');
+      } else if (current.paymentStatus === 'payment_submitted') {
+        if (statusMessage) {
+          statusMessage.innerHTML = '<strong>Đã ghi nhận thông tin chuyển khoản!</strong><br />Lễ tân đang kiểm tra giao dịch qua Techcombank và sẽ xác nhận lịch hẹn của bạn trong ít phút.';
+          statusMessage.style.background = '#ecfdf5';
+          statusMessage.style.color = '#065f46';
+        }
+        if (countdown) {
+          countdown.textContent = 'Đang chờ lễ tân xác nhận';
+          countdown.style.background = '#eff6ff';
+          countdown.style.color = '#1d4ed8';
+        }
       } else if (['payment_issue', 'paid_with_issue', 'expired', 'cancelled'].includes(current.paymentStatus)) {
         if (current.paymentStatus === 'expired' && Date.now() < graceUntil) {
           if (countdownTimer) clearInterval(countdownTimer);
