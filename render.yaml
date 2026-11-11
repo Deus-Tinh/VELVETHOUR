@@ -23,6 +23,8 @@ services:
         value: Tinh211006@
       - key: SERENITY_INITIAL_ADMIN_NAME
         value: Demo Admin
+      - key: VIETQR_DIRECT_ENABLED
+        value: "true"
       - key: SEPAY_ENABLED
         value: "false"
       - key: SEPAY_BANK_NAME
