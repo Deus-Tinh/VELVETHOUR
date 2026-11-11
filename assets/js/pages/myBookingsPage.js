@@ -15,7 +15,7 @@ import { apiClient } from '../services/apiClient.js';
 import { staffService } from '../services/staffSettingsPromoService.js';
 import { favoriteService, reviewService } from '../services/socialAndAnalyticsService.js';
 import { formatVND, esc, formatDate, todayStr } from '../core/utils.js';
-import { showToast, openChangePasswordModal } from '../ui/components.js';
+import { showToast } from '../ui/components.js';
 import { renderRescheduleQuote } from '../ui/rescheduleQuote.js';
 import { renderPaymentCheckout } from '../ui/paymentCheckout.js';
 import { bindInvoiceDownloadButtons } from '../ui/invoicePdf.js';
@@ -52,7 +52,6 @@ export function renderMyBookingsPage() {
             </div>
           </div>
           <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-            <button type="button" class="btn-outline btn-sm" id="custChangePasswordBtn">🔑 Đổi Mật Khẩu</button>
             <button type="button" class="btn-outline btn-sm" id="custLogoutBtn">Đăng Xuất</button>
           </div>
         ` : `
@@ -89,14 +88,6 @@ export function renderMyBookingsPage() {
       <div id="myTabContentArea"></div>
     </div>
   `;
-
-  document.getElementById('custChangePasswordBtn')?.addEventListener('click', () => {
-    openChangePasswordModal({
-      user: currentUser,
-      onChangePassword: (uid, oldPass, newPass, confirmPass) =>
-        authService.changePassword(uid, oldPass, newPass, confirmPass),
-    });
-  });
 
   document.getElementById('custLogoutBtn')?.addEventListener('click', () => {
     authService.logout();
