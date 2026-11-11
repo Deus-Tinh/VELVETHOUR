@@ -250,8 +250,9 @@ function nextVersion(collection) {
 function safeUser(user) {
   if (!user) return null;
   const { passwordHash: _hash, passwordSalt: _salt, salt: _oldSalt, ...safe } = user;
-  return safe;
+  return { ...safe, email: normalizeEmailAddress(user.email) };
 }
+function normalizeEmailAddress(value) { return String(value ?? '').trim().toLowerCase(); }
 function visibleBooking(booking, actor) {
   if (!booking || actor?.role !== 'staff') return booking;
   const { paymentRecords: _paymentRecords, refundRequest: _refundRequest, paymentCode: _paymentCode,
@@ -342,7 +343,7 @@ function migrateManagedStaffAndAdminAccounts() {
 
     const existingUsers = parseRows('users');
     for (const managed of DEFAULT_MANAGED_USERS) {
-      const existing = existingUsers.find((u) => u.id === managed.id || u.email?.toLowerCase() === managed.email.toLowerCase());
+      const existing = existingUsers.find((u) => u.id === managed.id || normalizeEmailAddress(u.email) === normalizeEmailAddress(managed.email));
       const password = passwords[managed.email] || DEFAULT_STAFF_ADMIN_PASSWORD;
       const passwordSalt = existing?.passwordSalt || randomBytes(16).toString('hex');
       const passwordHash = scryptSync(password, passwordSalt, 64).toString('hex');
@@ -374,7 +375,7 @@ function ensureProductionAdmin() {
   if (process.env.NODE_ENV !== 'production') return;
   if (parseRows('users').some((user) => user.role === 'admin' && user.active !== false)) return;
 
-  const email = String(process.env.SERENITY_INITIAL_ADMIN_EMAIL || '').trim().toLowerCase();
+  const email = normalizeEmailAddress(process.env.SERENITY_INITIAL_ADMIN_EMAIL);
   const password = String(process.env.SERENITY_INITIAL_ADMIN_PASSWORD || '');
   const name = String(process.env.SERENITY_INITIAL_ADMIN_NAME || 'Quản trị Serenity').trim().slice(0, 60);
   if (!email || !password) {
@@ -383,7 +384,7 @@ function ensureProductionAdmin() {
   if (!/^\S+@\S+\.\S{2,}$/.test(email) || !isStrongPassword(password) || name.length < 2) {
     throw new Error('Initial production admin settings are invalid. Check the email, display name, and password strength.');
   }
-  if (parseRows('users').some((user) => user.email?.toLowerCase() === email)) {
+  if (parseRows('users').some((user) => normalizeEmailAddress(user.email) === email)) {
     throw new Error('Initial production admin email already belongs to a non-admin account.');
   }
 
@@ -2366,11 +2367,11 @@ async function routeApi(request, response, url) {
 
   if (method === 'POST' && pathname === '/api/auth/login') {
     const body = await readBody(request);
-    const email = String(body.email || '').trim().toLowerCase();
+    const email = normalizeEmailAddress(body.email);
     const attemptKey = `${request.socket.remoteAddress || 'local'}:${email}`;
     const history = (loginAttempts.get(attemptKey) || []).filter((time) => Date.now() - time < 15 * 60 * 1000);
     if (history.length >= 8) throw new HttpError(429, 'Đăng nhập sai quá nhiều lần. Vui lòng thử lại sau 15 phút.', 'LOGIN_RATE_LIMIT');
-    const user = parseRows('users').find((item) => item.email.toLowerCase() === email && item.active !== false);
+    const user = parseRows('users').find((item) => normalizeEmailAddress(item.email) === email && item.active !== false);
     const supplied = typeof body.password === 'string' ? scryptSync(body.password, user?.passwordSalt || 'invalid-user', 64).toString('hex') : '';
     if (!user || !timingSafeEqual(Buffer.from(supplied, 'hex'), Buffer.from(user.passwordHash, 'hex'))) {
       history.push(Date.now()); loginAttempts.set(attemptKey, history);
@@ -2391,13 +2392,13 @@ async function routeApi(request, response, url) {
   if (method === 'POST' && pathname === '/api/auth/register') {
     const body = await readBody(request);
     const name = String(body.name || '').trim();
-    const email = String(body.email || '').trim().toLowerCase();
+    const email = normalizeEmailAddress(body.email);
     const phone = normalizeVietnamPhone(body.phone);
     const password = String(body.password || '');
     if (name.length < 2 || name.length > 60 || !/^\S+@\S+\.\S+$/.test(email) || !isVietnamPhone(phone) || !isStrongPassword(password)) {
       throw new HttpError(400, 'Thông tin đăng ký chưa hợp lệ. Mật khẩu cần tối thiểu 8 ký tự, có ít nhất 1 chữ số và 1 ký tự đặc biệt.', 'VALIDATION');
     }
-    if (parseRows('users').some((user) => user.email.toLowerCase() === email)) throw new HttpError(409, 'Email này đã được sử dụng.', 'DUPLICATE_EMAIL');
+    if (parseRows('users').some((user) => normalizeEmailAddress(user.email) === email)) throw new HttpError(409, 'Email này đã được sử dụng.', 'DUPLICATE_EMAIL');
     if (parseRows('users').some((user) => user.phone === phone)) throw new HttpError(409, 'Số điện thoại này đã được sử dụng.', 'DUPLICATE_PHONE');
     const reservedInvite = q.staffInvitesByEmail.all(email).find((invite) => !invite.accepted_at && Date.parse(invite.expires_at) > Date.now());
     if (reservedInvite) throw new HttpError(409, 'Email này đang có lời mời nhân viên. Hãy mở liên kết kích hoạt trong email.', 'STAFF_INVITE_PENDING');
@@ -2414,7 +2415,7 @@ async function routeApi(request, response, url) {
     const actor = requireActor(request, ['admin']);
     const body = await readBody(request);
     const staffId = String(body.staffId || '').trim();
-    const email = String(body.email || '').trim().toLowerCase();
+    const email = normalizeEmailAddress(body.email);
     const staff = getRecord('staff', staffId);
     if (!staff || staff.active === false) throw new HttpError(404, 'Không tìm thấy chuyên viên đang hoạt động.', 'STAFF_INVALID');
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) throw new HttpError(400, 'Vui lòng nhập địa chỉ email hợp lệ.', 'VALIDATION');
@@ -2422,7 +2423,7 @@ async function routeApi(request, response, url) {
     const users = parseRows('users');
     const existingStaffAccount = users.find((user) => user.role === 'staff' && user.staffId === staff.id);
     if (existingStaffAccount && existingStaffAccount.active !== false) throw new HttpError(409, 'Chuyên viên này đã có tài khoản hoạt động.', 'STAFF_ACCOUNT_EXISTS');
-    const emailOwner = users.find((user) => user.email.toLowerCase() === email);
+    const emailOwner = users.find((user) => normalizeEmailAddress(user.email) === email);
     if (emailOwner && emailOwner.id !== existingStaffAccount?.id) throw new HttpError(409, 'Email này đã được dùng cho một tài khoản khác.', 'DUPLICATE_EMAIL');
     const otherInvite = q.staffInvitesByEmail.all(email).find((invite) => invite.staff_id !== staff.id && !invite.accepted_at && Date.parse(invite.expires_at) > Date.now());
     if (otherInvite) throw new HttpError(409, 'Email này đang được dùng trong lời mời của một chuyên viên khác.', 'DUPLICATE_EMAIL');
@@ -2460,7 +2461,7 @@ async function routeApi(request, response, url) {
     const users = parseRows('users');
     const staffAccount = users.find((user) => user.role === 'staff' && user.staffId === staff.id);
     if (staffAccount && staffAccount.active !== false) throw new HttpError(409, 'Tài khoản nhân viên đã được kích hoạt.', 'STAFF_ACCOUNT_EXISTS');
-    const emailOwner = users.find((user) => user.email.toLowerCase() === invite.email);
+    const emailOwner = users.find((user) => normalizeEmailAddress(user.email) === normalizeEmailAddress(invite.email));
     if (emailOwner && emailOwner.id !== staffAccount?.id) throw new HttpError(409, 'Email này đã được dùng cho một tài khoản khác.', 'DUPLICATE_EMAIL');
     const phoneOwner = users.find((user) => user.phone === phone && user.id !== staffAccount?.id);
     if (phoneOwner) throw new HttpError(409, 'Số điện thoại này đã được dùng cho một tài khoản khác.', 'DUPLICATE_PHONE');
@@ -2490,11 +2491,11 @@ async function routeApi(request, response, url) {
     const body = await readBody(request);
     const current = getRecord('users', actor.id);
     const name = String(body.name ?? current.name).trim();
-    const email = String(body.email ?? current.email).trim().toLowerCase();
+    const email = normalizeEmailAddress(body.email ?? current.email);
     const phone = normalizeVietnamPhone(body.phone ?? current.phone);
     if (name.length < 2 || name.length > 60 || !/^\S+@\S+\.\S+$/.test(email) || !isVietnamPhone(phone)) throw new HttpError(400, 'Thông tin hồ sơ chưa hợp lệ.', 'VALIDATION');
     const users = parseRows('users');
-    if (users.some((user) => user.id !== actor.id && user.email.toLowerCase() === email)) throw new HttpError(409, 'Email này đã được sử dụng.', 'DUPLICATE_EMAIL');
+    if (users.some((user) => user.id !== actor.id && normalizeEmailAddress(user.email) === email)) throw new HttpError(409, 'Email này đã được sử dụng.', 'DUPLICATE_EMAIL');
     if (users.some((user) => user.id !== actor.id && user.phone === phone)) throw new HttpError(409, 'Số điện thoại này đã được sử dụng.', 'DUPLICATE_PHONE');
     const updated = { ...current, name, email, phone, updatedAt: new Date().toISOString() };
     transaction(() => { saveRecord('users', updated); nextVersion('users'); });
@@ -2543,12 +2544,12 @@ async function routeApi(request, response, url) {
   if (method === 'POST' && pathname === '/api/auth/forgot-password/request') {
     assertOrigin(request);
     const body = await readBody(request);
-    const email = String(body.email || '').trim().toLowerCase();
+    const email = normalizeEmailAddress(body.email);
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) {
       throw new HttpError(400, 'Vui lòng nhập địa chỉ email hợp lệ.', 'VALIDATION', { email: 'Vui lòng nhập địa chỉ email hợp lệ.' });
     }
     q.deleteExpiredPasswordResetOtps.run(Date.now());
-    const user = parseRows('users').find((item) => item.email?.toLowerCase() === email && item.active !== false);
+    const user = parseRows('users').find((item) => normalizeEmailAddress(item.email) === email && item.active !== false);
     if (!user) {
       throw new HttpError(404, 'Không tìm thấy tài khoản hoạt động với địa chỉ email này.', 'USER_NOT_FOUND', {
         email: 'Không tìm thấy tài khoản hoạt động với địa chỉ email này.',
@@ -2560,7 +2561,7 @@ async function routeApi(request, response, url) {
     const createdAt = new Date().toISOString();
 
     try {
-      await sendPasswordResetOtpEmail({ to: user.email, name: user.name, otp, expiresInMinutes: 10 });
+      await sendPasswordResetOtpEmail({ to: email, name: user.name, otp, expiresInMinutes: 10 });
     } catch (error) {
       const code = error.code === 'SMTP_NOT_CONFIGURED' ? 'SMTP_NOT_CONFIGURED' : 'SMTP_SEND_FAILED';
       throw new HttpError(503, error.message || 'Không thể gửi email mã OTP lúc này.', code);
@@ -2573,7 +2574,7 @@ async function routeApi(request, response, url) {
 
     return respond(response, 200, {
       ok: true,
-      email: user.email,
+      email,
       expiresInSeconds: 600,
       message: 'Mã xác thực OTP gồm 6 chữ số đã được gửi tới email của bạn.',
     });
@@ -2582,7 +2583,7 @@ async function routeApi(request, response, url) {
   if (method === 'POST' && pathname === '/api/auth/forgot-password/reset') {
     assertOrigin(request);
     const body = await readBody(request);
-    const email = String(body.email || '').trim().toLowerCase();
+    const email = normalizeEmailAddress(body.email);
     const otp = String(body.otp || '').trim();
     const newPassword = String(body.newPassword || '');
     const confirmPassword = body.confirmPassword !== undefined ? String(body.confirmPassword || '') : newPassword;
@@ -2622,7 +2623,7 @@ async function routeApi(request, response, url) {
       });
     }
 
-    const user = getRecord('users', otpRecord.user_id) || parseRows('users').find((item) => item.email?.toLowerCase() === email);
+    const user = getRecord('users', otpRecord.user_id) || parseRows('users').find((item) => normalizeEmailAddress(item.email) === email);
     if (!user || user.active === false) {
       q.deletePasswordResetOtp.run(email);
       throw new HttpError(404, 'Tài khoản không tồn tại hoặc đã ngừng hoạt động.', 'USER_NOT_FOUND');
