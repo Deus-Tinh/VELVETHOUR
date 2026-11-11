@@ -92,11 +92,11 @@ Pages Functions dùng Workers Free quota; hiện tại tài liệu Cloudflare n�
 
 ### Danh sách biến môi trường
 
-**Render:** `NODE_ENV`, `NODE_VERSION`, `PORT` (Render cấp), `DATABASE_URL`, `SERENITY_PROXY_TOKEN`, `SERENITY_INITIAL_ADMIN_EMAIL`, `SERENITY_INITIAL_ADMIN_PASSWORD`, `SERENITY_INITIAL_ADMIN_NAME`, `SERENITY_API_RATE_LIMIT`, `AI_PROVIDER`, `GEMINI_API_KEY`, `AI_MODEL`, `AI_FALLBACK_MODEL`, `AI_AGENT_REQUEST_TIMEOUT`, `AI_AGENT_TIMEOUT`, `SEPAY_ENABLED=false`.
+**Render:** `NODE_ENV`, `NODE_VERSION`, `PORT` (Render cấp), `DATABASE_URL`, `SERENITY_PROXY_TOKEN`, `SERENITY_INITIAL_ADMIN_EMAIL`, `SERENITY_INITIAL_ADMIN_PASSWORD`, `SERENITY_INITIAL_ADMIN_NAME`, `SERENITY_API_RATE_LIMIT`, `AI_PROVIDER`, `GEMINI_API_KEY`, `AI_MODEL`, `AI_FALLBACK_MODEL`, `AI_AGENT_REQUEST_TIMEOUT`, `AI_AGENT_TIMEOUT`, `SEPAY_ENABLED=false`, `VIETQR_DIRECT_ENABLED=true` (chuyển khoản VietQR trực tiếp duyệt thủ công), kèm các biến tài khoản ngân hàng `SEPAY_BANK_NAME`, `SEPAY_ACCOUNT_NUMBER`, `SEPAY_ACCOUNT_HOLDER` khi bật thanh toán.
 
 **Vercel / Cloudflare Pages Functions:** `SERENITY_API_ORIGIN`, secret `SERENITY_PROXY_TOKEN`.
 
-Không cần điền `SEPAY_ACCOUNT_NUMBER`, `SEPAY_ACCOUNT_HOLDER`, `SEPAY_WEBHOOK_API_KEY` hoặc bật SePay trong giai đoạn thử triển khai. Chỉ cấu hình các biến đó sau khi người dùng cho phép và xác minh webhook/đối soát trên môi trường an toàn.
+Đối với thanh toán trực tiếp VietQR thủ công (`VIETQR_DIRECT_ENABLED=true`), cần điền đầy đủ `SEPAY_BANK_NAME`, `SEPAY_ACCOUNT_NUMBER` (6-19 chữ số), `SEPAY_ACCOUNT_HOLDER` (5-50 chữ cái in hoa không dấu) trên Render Dashboard; `SEPAY_ENABLED` giữ `false` để yêu cầu admin duyệt thủ công và không cần `SEPAY_WEBHOOK_API_KEY`. Chỉ bật `SEPAY_ENABLED=true` kèm webhook key sau khi người dùng cho phép và xác minh đối soát tự động trên môi trường an toàn.
 
 ## Kiểm thử và giới hạn xác minh
 

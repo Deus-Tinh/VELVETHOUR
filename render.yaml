@@ -25,6 +25,8 @@ services:
         value: Demo Admin
       - key: SEPAY_ENABLED
         value: "false"
+      - key: VIETQR_DIRECT_ENABLED
+        value: "true"
       - key: SEPAY_BANK_NAME
         sync: false
       - key: SEPAY_ACCOUNT_NUMBER
