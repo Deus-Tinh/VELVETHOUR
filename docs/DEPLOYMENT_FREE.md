@@ -96,7 +96,9 @@ Pages Functions dùng Workers Free quota; hiện tại tài liệu Cloudflare n�
 
 **Vercel / Cloudflare Pages Functions:** `SERENITY_API_ORIGIN`, secret `SERENITY_PROXY_TOKEN`.
 
-Không cần điền `SEPAY_ACCOUNT_NUMBER`, `SEPAY_ACCOUNT_HOLDER`, `SEPAY_WEBHOOK_API_KEY` hoặc bật SePay trong giai đoạn thử triển khai. Chỉ cấu hình các biến đó sau khi người dùng cho phép và xác minh webhook/đối soát trên môi trường an toàn.
+Với chuyển khoản VietQR thủ công, cấu hình các biến sau trên backend: `VIETQR_DIRECT_ENABLED=true`, `SEPAY_BANK_NAME`, `SEPAY_ACCOUNT_NUMBER` và `SEPAY_ACCOUNT_HOLDER`. Giữ `SEPAY_ENABLED=false`; admin chỉ xác nhận sau khi kiểm tra và đối soát giao dịch ngân hàng. Chế độ này không cần `SEPAY_WEBHOOK_API_KEY`. Vercel/Pages chỉ chuyển tiếp request, không lưu thông tin tài khoản ngân hàng.
+
+Chỉ bật xác nhận SePay tự động bằng cách cấu hình `SEPAY_ENABLED=true` và `SEPAY_WEBHOOK_API_KEY` sau khi webhook và quy trình đối soát đã được rà soát, cho phép.
 
 ## Kiểm thử và giới hạn xác minh
 

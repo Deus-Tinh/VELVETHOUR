@@ -164,7 +164,8 @@ export function createPaymentOperations({ db, getRecord, parseRows, saveRecord, 
   ) VALUES ('sepay', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
 
   const authenticateWebhook = (authorization) => {
-    const expected = paymentConfig(env).webhookApiKey;
+    const config = paymentConfig(env);
+    const expected = config.mode === 'sepay' ? config.webhookApiKey : '';
     if (!expected || expected.length < 24) return false;
     const provided = typeof authorization === 'string' ? authorization : '';
     const expectedHeader = `Apikey ${expected}`;
