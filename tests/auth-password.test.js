@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { Readable, Writable } from 'node:stream';
 import { finished } from 'node:stream/promises';
 import { setMailTransportForTests } from '../server/mailer.js';
@@ -181,11 +182,12 @@ test('Forgot password sends 6-digit OTP email and resets password with valid OTP
   assert.equal(loginAfterReset.body.user.staffId, 'st-03');
 });
 
-test('End-to-end virtual email account + real TCP SMTP server receives 6-digit OTP and resets password', async () => {
+test('End-to-end virtual email account + local TCP SMTP test server receives 6-digit OTP and resets password', async () => {
   setMailTransportForTests(null);
   const net = await import('node:net');
 
   const receivedRawMessages = [];
+  const receivedRecipients = [];
   const smtpServer = net.createServer((socket) => {
     let inDataMode = false;
     let dataBuffer = '';
@@ -227,6 +229,7 @@ test('End-to-end virtual email account + real TCP SMTP server receives 6-digit O
         } else if (/^MAIL FROM:/i.test(line)) {
           socket.write('250 2.1.0 Ok\r\n');
         } else if (/^RCPT TO:/i.test(line)) {
+          receivedRecipients.push(line);
           socket.write('250 2.1.5 Ok\r\n');
         } else if (/^DATA$/i.test(line)) {
           inDataMode = true;
@@ -264,13 +267,29 @@ test('End-to-end virtual email account + real TCP SMTP server receives 6-digit O
     assert.equal(registerRes.status, 201);
     assert.equal(registerRes.body.user.email, virtualEmail);
 
-    // 2. Gửi yêu cầu Quên mật khẩu -> Server kết nối tới cổng TCP SMTP thật để gửi mail
+    // Emulate a legacy imported account with inconsistent casing and whitespace.
+    const legacyDb = new DatabaseSync(process.env.SERENITY_DB_PATH);
+    try {
+      const row = legacyDb.prepare('SELECT payload FROM collection_records WHERE collection = ? AND id = ?')
+        .get('users', registerRes.body.user.id);
+      assert.ok(row, 'Registered account must exist in the isolated test database');
+      const legacyUser = JSON.parse(row.payload);
+      legacyUser.email = `  ${virtualEmail.toUpperCase()}  `;
+      legacyDb.prepare('UPDATE collection_records SET payload = ? WHERE collection = ? AND id = ?')
+        .run(JSON.stringify(legacyUser), 'users', registerRes.body.user.id);
+    } finally {
+      legacyDb.close();
+    }
+
+    // 2. Gửi yêu cầu Quên mật khẩu -> Server kết nối tới máy chủ SMTP TCP giả lập cục bộ
     const otpReqRes = await request('POST', '/api/auth/forgot-password/request', {
       email: virtualEmail,
     });
     assert.equal(otpReqRes.status, 200);
     assert.equal(otpReqRes.body.ok, true);
+    assert.equal(otpReqRes.body.email, virtualEmail, 'Legacy stored email must be normalized in the response');
     assert.equal(receivedRawMessages.length, 1, 'Virtual SMTP server must receive 1 MIME email');
+    assert.deepEqual(receivedRecipients, [`RCPT TO:<${virtualEmail}>`], 'SMTP recipient must use the normalized email');
 
     // 3. Giải mã nội dung MIME base64 từ hòm thư ảo để lấy mã OTP 6 chữ số
     const rawMime = receivedRawMessages[0];
