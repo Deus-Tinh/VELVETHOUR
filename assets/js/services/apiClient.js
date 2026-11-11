@@ -299,6 +299,10 @@ export const apiClient = {
     return request(`/admin/holiday-sales/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify({ patch, expectedRevision, requestId }) });
   },
   isOnline: () => online,
+  /** Có thể đẩy collection quản trị lên máy chủ ngay không (đang online và phiên là admin). */
+  canSyncAdminCollections: () => online && currentRole === 'admin',
+  /** Collection còn thay đổi cục bộ chưa được máy chủ xác nhận. */
+  hasPendingCollectionSync: (collection) => dirtyCollections.has(collection) || syncTasks.has(collection),
   setLocalRole(role) { if (!online) currentRole = role || null; },
   getOccupiedSlots: () => occupiedSlots.slice(),
   request,

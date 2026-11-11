@@ -27,6 +27,7 @@ import { showToast, showConfirmModal, openChangePasswordModal } from '../ui/comp
 import { getImageById, getServiceImage } from '../imageManifest.js';
 import { bookingMessage, customerChannelLinks, rebookingMessage } from '../services/customerMessaging.js';
 import { THERAPY_GROUPS, getTherapyGroupName } from '../domain/therapyGroupModel.js';
+import { STAFF_ROSTER_MAX_FILE_BYTES, staffRosterRecordMatches } from '../domain/staffRosterModel.js';
 import { renderAdminAgent } from './adminAgentPage.js';
 import { renderAdminHolidaySales } from './adminHolidaySalesPage.js';
 
@@ -1591,6 +1592,16 @@ function renderTabStaff(container) {
         ? 'Hồ sơ nhân viên được lưu trên máy chủ Serenity.'
         : 'Máy chủ chưa kết nối. Chưa thể lưu thay đổi nhân viên.'}
     </div>
+    <section class="staff-roster-transfer" aria-labelledby="staffRosterTransferTitle" style="border:1px dashed #cbd5e1;border-radius:12px;padding:14px 16px;margin:0 0 18px;background:#f8fafc;display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;">
+      <div style="flex:1 1 320px;">
+        <strong id="staffRosterTransferTitle" style="color:var(--text-dark);">Chuyển hồ sơ chuyên viên giữa các site (chỉ dữ liệu nhân viên)</strong>
+        <p style="margin:4px 0 0;color:#64748b;font-size:13px;line-height:1.55;">Tệp JSON chỉ gồm hồ sơ chuyên viên: ID, tên, chức danh, ảnh, chuyên môn, ca làm, ngày làm/nghỉ, trạng thái. <strong>Không</strong> gồm tài khoản, mật khẩu, lời mời hay lịch hẹn. Khi nhập: thêm mới hoặc cập nhật theo ID, không xóa chuyên viên đang có.</p>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button type="button" class="btn-sm btn-outline" id="exportStaffRosterBtn">Xuất hồ sơ chuyên viên (JSON)</button>
+        <button type="button" class="btn-sm btn-outline" id="importStaffRosterBtn" ${apiClient.isOnline() ? '' : 'disabled title="Cần kết nối máy chủ để nhập và đồng bộ"'}>Nhập hồ sơ chuyên viên…</button>
+      </div>
+    </section>
 
     <div class="data-table-wrap">
       <table class="data-table">
@@ -1640,6 +1651,15 @@ function renderTabStaff(container) {
   });
 
   document.getElementById('addNewStaffBtn')?.addEventListener('click', () => openStaffFormModal(null, categories, container));
+  document.getElementById('exportStaffRosterBtn')?.addEventListener('click', () => {
+    try {
+      const count = downloadStaffRoster();
+      showToast(`Đã xuất ${count} hồ sơ chuyên viên (chỉ dữ liệu nhân viên).`, 'success');
+    } catch (error) {
+      showToast(error.message || 'Không thể xuất hồ sơ chuyên viên.', 'danger');
+    }
+  });
+  document.getElementById('importStaffRosterBtn')?.addEventListener('click', () => openStaffRosterImportModal(container));
 
   container.querySelectorAll('.invite-staff-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -1773,6 +1793,239 @@ function showStaffInviteResult(staff, invitationUrl, invitation, closeModal) {
       input?.focus(); input?.select();
       showToast('Hãy sao chép liên kết đang được chọn.', 'normal');
     }
+  });
+}
+
+/* ---------------- Chuyển hồ sơ chuyên viên giữa các site (chỉ dữ liệu nhân viên) ---------------- */
+const STAFF_ROSTER_FIELD_LABELS = {
+  name: 'Tên', title: 'Chức danh', imageId: 'Ảnh', imageUrl: 'Ảnh', specialties: 'Chuyên môn', workingDays: 'Ngày làm',
+  shiftStart: 'Ca làm', shiftEnd: 'Ca làm', daysOff: 'Ngày nghỉ', breaks: 'Giờ nghỉ', breakStart: 'Giờ nghỉ', breakEnd: 'Giờ nghỉ', active: 'Trạng thái',
+};
+const STAFF_ROSTER_TONES = { info: '#64748b', ok: '#047857', warn: '#b45309', error: '#b91c1c' };
+
+function downloadStaffRoster() {
+  const payload = staffService.exportRoster();
+  const host = (window.location.hostname || 'site').replace(/[^a-z0-9.-]+/gi, '-');
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = objectUrl;
+  link.download = `staff-roster-${host}-${stamp}.json`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+  return payload.count;
+}
+
+function openStaffRosterImportModal(container) {
+  const modal = document.getElementById('staffModal');
+  const body = document.getElementById('staffModalBody');
+  if (!modal || !body) return;
+  let fileText = '';
+  let preview = null;
+  let importResult = null;
+  let mode = 'preview'; // 'preview' | 'retry' | 'done'
+  let busy = false;
+
+  body.innerHTML = `
+    <div style="padding:28px;max-height:85vh;overflow:auto;">
+      <h3 style="font-family:var(--font-heading);font-size:1.45rem;color:var(--text-dark);margin:0 45px 10px 0;">Nhập hồ sơ chuyên viên (chỉ dữ liệu nhân viên)</h3>
+      <p style="color:#64748b;margin:0 0 12px;line-height:1.6;">Chọn tệp JSON đã xuất bằng nút “Xuất hồ sơ chuyên viên”. Tệp chỉ chứa hồ sơ chuyên viên — <strong>không</strong> có tài khoản, mật khẩu, lời mời hay lịch hẹn. Bạn sẽ thấy bản xem trước; chưa có gì được ghi cho đến khi bấm nút Nhập.</p>
+      <ul style="color:#475569;font-size:13px;line-height:1.6;margin:0 0 16px;padding-left:18px;">
+        <li>Chuyên viên có ID chưa tồn tại trên site này sẽ được thêm mới.</li>
+        <li>Chuyên viên trùng ID chỉ bị ghi đè khi bạn đánh dấu xác nhận.</li>
+        <li>Chuyên viên chỉ có trên site này được giữ nguyên, không bị xóa.</li>
+        <li>Nếu tệp có bất kỳ dòng lỗi nào (sai định dạng, chuyên môn không tồn tại…), toàn bộ tệp bị từ chối.</li>
+      </ul>
+      <div class="form-group">
+        <label for="staffRosterFileInput">Tệp hồ sơ chuyên viên (.json, tối đa ${Math.round(STAFF_ROSTER_MAX_FILE_BYTES / 1024 / 1024)} MB)</label>
+        <input type="file" class="form-control" id="staffRosterFileInput" accept="application/json,.json">
+      </div>
+      <div id="staffRosterStatus" role="status" aria-live="polite" style="font-size:13px;line-height:1.55;min-height:18px;"></div>
+      <div id="staffRosterPreview"></div>
+      <div style="display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap;margin-top:20px;">
+        <button type="button" class="btn-outline" id="cancelStaffRosterBtn">Đóng</button>
+        <button type="button" class="btn-primary" id="applyStaffRosterBtn" disabled>Nhập</button>
+      </div>
+    </div>`;
+
+  const fileInput = document.getElementById('staffRosterFileInput');
+  const statusBox = document.getElementById('staffRosterStatus');
+  const previewBox = document.getElementById('staffRosterPreview');
+  const applyButton = document.getElementById('applyStaffRosterBtn');
+  const closeModal = () => {
+    if (busy) { showToast('Đang xử lý, vui lòng chờ hoàn tất.', 'normal'); return; }
+    modal.classList.remove('show');
+    modal.setAttribute('aria-hidden', 'true');
+  };
+  const setStatus = (message, tone = 'info') => {
+    statusBox.style.color = STAFF_ROSTER_TONES[tone] || STAFF_ROSTER_TONES.info;
+    statusBox.textContent = message;
+  };
+  const overwriteChecked = () => Boolean(body.querySelector('#staffRosterOverwrite')?.checked);
+  const updateApplyButton = () => {
+    if (mode === 'done') { applyButton.hidden = true; return; }
+    applyButton.hidden = false;
+    if (mode === 'retry') { applyButton.disabled = busy; applyButton.textContent = busy ? 'Đang đồng bộ…' : 'Thử đồng bộ lại'; return; }
+    if (!preview) { applyButton.disabled = true; applyButton.textContent = busy ? 'Đang đọc tệp…' : 'Nhập'; return; }
+    const { plan } = preview;
+    const count = plan.creates.length + (overwriteChecked() ? plan.updates.length : 0);
+    applyButton.disabled = busy || plan.invalid.length > 0 || count === 0;
+    applyButton.textContent = busy ? 'Đang nhập…'
+      : plan.invalid.length ? 'Không thể nhập (tệp có lỗi)'
+      : count ? `Nhập ${count} chuyên viên & đồng bộ máy chủ` : 'Không có thay đổi để nhập';
+  };
+
+  const renderPreview = () => {
+    const { plan, meta } = preview;
+    const stat = (label, value, color) => `<div style="border:1px solid #e2e8f0;border-radius:10px;padding:8px 12px;min-width:120px;flex:1 1 120px;"><div style="font-size:12px;color:#64748b;">${label}</div><strong style="font-size:1.15rem;color:${color};">${value}</strong></div>`;
+    const changeLabels = (fields) => [...new Set(fields.map((field) => STAFF_ROSTER_FIELD_LABELS[field] || field))].join(', ');
+    const rows = [
+      ...plan.creates.map((item) => ({ action: 'Thêm mới', color: '#047857', id: item.record.id, nameHtml: esc(item.record.name), detail: item.warnings.join(' ') })),
+      ...plan.updates.map((item) => ({
+        action: 'Trùng ID – khác dữ liệu', color: '#b45309', id: item.record.id,
+        nameHtml: item.existing.name !== item.record.name ? `${esc(item.existing.name)} → <strong>${esc(item.record.name)}</strong>` : esc(item.record.name),
+        detail: `Thay đổi: ${changeLabels(item.fields)}. ${item.warnings.join(' ')}`.trim(),
+      })),
+      ...plan.unchanged.map((item) => ({ action: 'Giống hệt – bỏ qua', color: '#64748b', id: item.record.id, nameHtml: esc(item.record.name), detail: '' })),
+    ];
+    const sameSite = meta.source && meta.source === window.location.origin;
+    previewBox.innerHTML = `
+      <div style="margin-top:14px;font-size:13px;color:#475569;">Nguồn tệp: <strong>${esc(meta.source || 'không rõ')}</strong> · Xuất lúc: ${esc(meta.exportedAt || '—')}
+        ${sameSite ? '<div style="color:#b45309;margin-top:4px;">Lưu ý: tệp này được xuất từ chính site hiện tại.</div>' : ''}</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin:12px 0;">
+        ${stat('Dòng trong tệp', plan.total, 'var(--text-dark)')}
+        ${stat('Thêm mới', plan.creates.length, '#047857')}
+        ${stat('Trùng ID – khác dữ liệu', plan.updates.length, '#b45309')}
+        ${stat('Giống hệt', plan.unchanged.length, '#64748b')}
+        ${stat('Giữ nguyên (chỉ có ở site này)', plan.preserved.length, '#334155')}
+        ${stat('Dòng lỗi', plan.invalid.length, plan.invalid.length ? '#b91c1c' : '#64748b')}
+      </div>
+      ${plan.invalid.length ? `
+        <div role="alert" style="border:1px solid #fecaca;background:#fef2f2;border-radius:10px;padding:12px 14px;margin-bottom:12px;color:#7f1d1d;font-size:13px;line-height:1.55;">
+          <strong>Tệp bị từ chối — không có dòng nào được nhập.</strong> Sửa các dòng sau ở site nguồn (hoặc tạo danh mục còn thiếu trên site này) rồi xuất lại:
+          <ul style="margin:6px 0 0;padding-left:18px;">
+            ${plan.invalid.map((row) => `<li>Dòng ${row.index + 1}${row.id ? ` (ID ${esc(row.id)}${row.name ? ` – ${esc(row.name)}` : ''})` : ''}: ${esc(row.errors.join(' '))}</li>`).join('')}
+          </ul>
+        </div>` : ''}
+      ${rows.length ? `
+        <div class="data-table-wrap" style="max-height:280px;overflow:auto;">
+          <table class="data-table">
+            <thead><tr><th>Hành động</th><th>ID</th><th>Chuyên viên</th><th>Ghi chú</th></tr></thead>
+            <tbody>
+              ${rows.map((row) => `<tr><td><span style="color:${row.color};font-weight:600;">${row.action}</span></td><td><code>${esc(row.id)}</code></td><td>${row.nameHtml}</td><td style="font-size:12px;color:#64748b;">${esc(row.detail)}</td></tr>`).join('')}
+            </tbody>
+          </table>
+        </div>` : ''}
+      ${plan.preserved.length ? `<details style="margin-top:10px;font-size:13px;color:#475569;"><summary>${plan.preserved.length} chuyên viên chỉ có trên site này sẽ được giữ nguyên</summary><div style="margin-top:6px;">${plan.preserved.map((staff) => `${esc(staff.name)} (<code>${esc(staff.id)}</code>)`).join(', ')}</div></details>` : ''}
+      ${plan.updates.length && !plan.invalid.length ? `
+        <label style="display:flex;gap:8px;align-items:flex-start;margin-top:14px;padding:10px 12px;border:1px solid #fde68a;background:#fffbeb;border-radius:10px;font-weight:400;font-size:13px;line-height:1.55;color:#78350f;">
+          <input type="checkbox" id="staffRosterOverwrite" style="margin-top:3px;">
+          <span>Tôi xác nhận <strong>ghi đè ${plan.updates.length} chuyên viên trùng ID</strong> trên site này bằng dữ liệu trong tệp. Bỏ chọn để chỉ thêm chuyên viên mới và giữ nguyên các chuyên viên trùng ID.</span>
+        </label>` : ''}`;
+    body.querySelector('#staffRosterOverwrite')?.addEventListener('change', updateApplyButton);
+  };
+
+  const syncImported = async () => {
+    busy = true;
+    updateApplyButton();
+    setStatus('Đã ghi trên trình duyệt này. Đang đồng bộ lên máy chủ…');
+    try {
+      const sync = await apiClient.waitForCollectionSync('staff');
+      if (!sync.synced || apiClient.hasPendingCollectionSync('staff')) throw new Error('máy chủ chưa xác nhận toàn bộ thay đổi');
+      const summary = `thêm ${importResult.createdIds.length}, cập nhật ${importResult.updatedIds.length}`
+        + `${importResult.skippedUpdates ? `, giữ nguyên ${importResult.skippedUpdates} chuyên viên trùng ID (không xác nhận ghi đè)` : ''}`
+        + `; ${importResult.preserved} chuyên viên sẵn có không bị ảnh hưởng.`;
+      let verified = false;
+      let verifyError = null;
+      try {
+        await apiClient.refresh();
+        verified = importResult.written.every((record) => staffRosterRecordMatches(staffService.get(record.id), record));
+      } catch (error) { verifyError = error; }
+      mode = 'done';
+      renderTabStaff(container);
+      if (verified) {
+        setStatus(`Đã đồng bộ lên máy chủ và xác minh lại từ máy chủ: ${summary}`, 'ok');
+        showToast('Đã nhập và đồng bộ hồ sơ chuyên viên lên máy chủ.', 'success');
+      } else if (verifyError) {
+        setStatus(`Máy chủ đã lưu phiên bản mới (${summary}) nhưng không tải lại được để xác minh: ${verifyError.message || 'lỗi kết nối'}. Hãy tải lại trang để kiểm tra.`, 'warn');
+      } else {
+        setStatus(`Máy chủ đã lưu nhưng dữ liệu tải lại chưa khớp hoàn toàn với tệp (có thể vừa có chỉnh sửa khác). Hãy kiểm tra danh sách chuyên viên. ${summary}`, 'warn');
+      }
+    } catch (error) {
+      mode = 'retry';
+      renderTabStaff(container);
+      setStatus(`Đã ghi trên trình duyệt này nhưng CHƯA đồng bộ lên máy chủ (${error.message || 'lỗi kết nối'}). Site công khai chưa thấy thay đổi. Bấm “Thử đồng bộ lại”, hoặc hệ thống sẽ thử lại khi bạn tải lại trang với phiên quản trị.`, 'error');
+    } finally {
+      busy = false;
+      updateApplyButton();
+    }
+  };
+
+  modal.classList.add('show');
+  modal.setAttribute('aria-hidden', 'false');
+  const closeButton = document.getElementById('closeStaffModalTop');
+  if (closeButton) closeButton.onclick = closeModal;
+  document.getElementById('cancelStaffRosterBtn')?.addEventListener('click', closeModal);
+
+  fileInput?.addEventListener('change', async () => {
+    const file = fileInput.files?.[0];
+    preview = null;
+    fileText = '';
+    previewBox.innerHTML = '';
+    setStatus('');
+    updateApplyButton();
+    if (!file) return;
+    if (file.size > STAFF_ROSTER_MAX_FILE_BYTES) {
+      setStatus(`Tệp lớn hơn ${Math.round(STAFF_ROSTER_MAX_FILE_BYTES / 1024 / 1024)} MB.`, 'error');
+      return;
+    }
+    busy = true;
+    updateApplyButton();
+    try {
+      if (!apiClient.canSyncAdminCollections()) throw new Error('Cần kết nối máy chủ và phiên đăng nhập quản trị còn hiệu lực để nhập. Hãy tải lại trang rồi thử lại.');
+      const text = await file.text();
+      setStatus('Đang đồng bộ thay đổi còn chờ và tải danh sách chuyên viên mới nhất từ máy chủ…');
+      await apiClient.waitForCollectionSync('staff');
+      await apiClient.refresh();
+      preview = staffService.previewRosterImport(text);
+      fileText = text;
+      setStatus(preview.plan.invalid.length
+        ? `Tệp có ${preview.plan.invalid.length} dòng lỗi — không thể nhập.`
+        : `Đã đọc ${preview.plan.total} chuyên viên. Kiểm tra bản xem trước — chưa có thay đổi nào được ghi.`,
+      preview.plan.invalid.length ? 'error' : 'info');
+      renderPreview();
+    } catch (error) {
+      preview = null;
+      setStatus(error.message || 'Không đọc được tệp.', 'error');
+    } finally {
+      busy = false;
+      updateApplyButton();
+    }
+  });
+
+  applyButton?.addEventListener('click', async () => {
+    if (busy) return;
+    if (mode === 'retry') { await syncImported(); return; }
+    if (!preview || mode !== 'preview') return;
+    try {
+      if (!apiClient.canSyncAdminCollections()) throw new Error('Mất kết nối máy chủ hoặc phiên quản trị đã hết hạn. Chưa có thay đổi nào được ghi.');
+      importResult = staffService.applyRosterImport(fileText, { overwriteMatching: overwriteChecked(), expectedSignature: preview.signature });
+    } catch (error) {
+      if (error.code === 'ROSTER_STALE') { preview = null; previewBox.innerHTML = ''; if (fileInput) fileInput.value = ''; }
+      setStatus(error.message || 'Không thể nhập hồ sơ chuyên viên.', 'error');
+      updateApplyButton();
+      return;
+    }
+    if (!importResult.wrote) {
+      setStatus('Không có thay đổi nào cần ghi.', 'info');
+      return;
+    }
+    if (fileInput) fileInput.disabled = true;
+    body.querySelector('#staffRosterOverwrite')?.setAttribute('disabled', '');
+    await syncImported();
   });
 }
 

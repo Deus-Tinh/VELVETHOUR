@@ -6,6 +6,7 @@ import { AppError } from '../core/errors.js';
 import { validate, schemas, required, time, oneOf } from '../core/validators.js';
 import { timeToMin, isValidDateStr, isValidTimeStr, todayStr } from '../core/utils.js';
 import { authService } from './authService.js';
+import { buildStaffRosterExport, parseStaffRosterFile, planStaffRosterImport, applyStaffRosterPlan, staffRosterPlanSignature } from '../domain/staffRosterModel.js';
 
 function requireAdmin() {
   if (authService.getCurrentUser()?.role !== 'admin') throw new AppError('UNAUTHORIZED', 'Chỉ quản trị viên mới được thay đổi cài đặt, nhân viên hoặc khuyến mãi.');
@@ -72,6 +73,45 @@ export const staffService = {
     const svc = serviceRepo.getById(serviceId);
     if (!svc) return [];
     return this.listActive().filter((s) => (s.specialties || []).includes(svc.category));
+  },
+  /** Xuất hồ sơ chuyên viên (chỉ dữ liệu nhân viên, không tài khoản/mật khẩu/lịch hẹn). */
+  exportRoster() {
+    requireAdmin();
+    const source = typeof window !== 'undefined' ? window.location.origin : '';
+    return buildStaffRosterExport(staffRepo.getAll(), { source });
+  },
+  /** Đọc tệp và lập kế hoạch nhập — KHÔNG ghi dữ liệu. */
+  previewRosterImport(text) {
+    requireAdmin();
+    const categoryIds = new Set(categoryRepo.getAll().map((c) => c.id));
+    const parsed = parseStaffRosterFile(text, { categoryIds });
+    const plan = planStaffRosterImport(parsed, staffRepo.getAll());
+    return { meta: parsed.meta, plan, signature: staffRosterPlanSignature(plan) };
+  },
+  /**
+   * Nhập (upsert theo ID, không xóa). Đọc lại tệp và dữ liệu hiện tại; nếu khác bản xem trước thì từ chối.
+   * Ghi một lần → sự kiện data:changed → apiClient đồng bộ collection "staff" lên máy chủ.
+   */
+  applyRosterImport(text, { overwriteMatching = false, expectedSignature } = {}) {
+    requireAdmin();
+    const categoryIds = new Set(categoryRepo.getAll().map((c) => c.id));
+    const current = staffRepo.getAll();
+    const plan = planStaffRosterImport(parseStaffRosterFile(text, { categoryIds }), current);
+    if (expectedSignature !== staffRosterPlanSignature(plan)) {
+      throw new AppError('ROSTER_STALE', 'Dữ liệu chuyên viên trên site đã thay đổi kể từ lúc xem trước. Hãy chọn lại tệp để xem trước lần nữa.');
+    }
+    const merged = applyStaffRosterPlan(plan, current, { overwriteMatching });
+    const createdIds = plan.creates.map((item) => item.record.id);
+    const updatedIds = overwriteMatching ? plan.updates.map((item) => item.record.id) : [];
+    const touched = new Set([...createdIds, ...updatedIds]);
+    const written = merged.filter((record) => touched.has(record.id));
+    written.forEach(checkStaff);
+    if (touched.size) staffRepo.replaceAll(merged);
+    return {
+      createdIds, updatedIds, written,
+      skippedUpdates: overwriteMatching ? 0 : plan.updates.length,
+      unchanged: plan.unchanged.length, preserved: plan.preserved.length, wrote: touched.size > 0,
+    };
   },
 };
 
