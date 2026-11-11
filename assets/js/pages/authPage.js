@@ -81,7 +81,8 @@ export function renderAuthPage(mode = 'login', returnTo = null) {
         <h2>Bạn đã đăng nhập với vai trò: ${currentUser.role.toUpperCase()}</h2>
         <p style="margin: 15px 0 25px 0; color: var(--text-light);">${esc(currentUser.name)} (${esc(currentUser.email)})</p>
         <div style="display: flex; gap: 12px; justify-content: center; flex-wrap: wrap;">
-          <a href="/lich-cua-toi" class="btn-primary" style="text-decoration:none;">Lịch Của Tôi</a>
+          <a href="/tai-khoan" class="btn-primary" style="text-decoration:none;">Hồ Sơ Tài Khoản</a>
+          <a href="/lich-cua-toi" class="btn-outline" style="text-decoration:none;">Lịch Của Tôi</a>
           ${currentUser.role === 'admin' ? `<a href="/admin" class="btn-primary" style="text-decoration:none;background:#1e293b!important;">Admin Portal</a>` : ''}
           ${currentUser.role === 'staff' ? `<a href="/nhan-vien" class="btn-primary" style="text-decoration:none;background:#059669!important;">Staff Portal</a>` : ''}
           <button type="button" class="btn-outline" id="authChangePwdBtn">🔑 Đổi Mật Khẩu</button>
