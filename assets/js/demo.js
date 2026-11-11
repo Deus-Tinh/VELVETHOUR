@@ -23,6 +23,7 @@ import { renderServicesPage } from './pages/servicesPage.js';
 import { renderServiceDetailPage } from './pages/serviceDetailPage.js';
 import { renderBookingPage } from './pages/bookingPage.js';
 import { renderMyBookingsPage } from './pages/myBookingsPage.js';
+import { renderAccountProfilePage } from './pages/accountProfilePage.js';
 import { renderStaffDashboardPage } from './pages/staffDashboardPage.js';
 import { renderAdminDashboardPage } from './pages/adminDashboardPage.js';
 import { renderAuthPage } from './pages/authPage.js';
@@ -635,6 +636,10 @@ function handleRoute() {
     case '/lich-cua-toi':
       renderMyBookingsPage();
       break;
+    case '/tai-khoan':
+    case '/ho-so':
+      renderAccountProfilePage();
+      break;
     case '/nhan-vien':
       renderStaffDashboardPage();
       break;
@@ -694,7 +699,7 @@ function updateActiveNav(pathname = window.location.pathname) {
       ${managedNavs}
       ${extraNavs}
       ${user ? `
-        <li><a href="/lich-cua-toi" style="color:var(--primary-brown);font-weight:bold;">👤 ${esc(user.name.split(' ').slice(-1)[0])}</a></li>
+        <li><a href="/tai-khoan" class="${isActive('/tai-khoan') || isActive('/ho-so') ? 'active' : ''}" style="color:var(--primary-brown);font-weight:bold;">👤 ${esc(user.name.split(' ').slice(-1)[0])}</a></li>
       ` : `
         <li><a href="/dang-nhap" class="${isActive('/dang-nhap') ? 'active' : ''}" style="color:var(--primary-brown);font-weight:bold;">🔑 Đăng Nhập</a></li>
       `}

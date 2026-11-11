@@ -1,5 +1,5 @@
 /**
- * Trang Lịch Hẹn Của Tôi & Hồ Sơ Khách Hàng (/lich-cua-toi).
+ * Trang Lịch Hẹn Của Tôi & Liệu Trình Yêu Thích (/lich-cua-toi).
  * Tính năng:
  * - Tra cứu lịch theo SĐT hoặc xem theo tài khoản đăng nhập.
  * - Danh sách Lịch sắp tới & Lịch sử hoàn thành.
@@ -7,7 +7,6 @@
  * - Đặt lại dịch vụ (Rebook CTA).
  * - Gửi đánh giá cho các lịch Completed.
  * - Quản lý liệu trình yêu thích (Favorites).
- * - Đăng nhập / Đăng ký / Cập nhật hồ sơ cá nhân.
  */
 import { bookingService } from '../services/bookingService.js';
 import { authService } from '../services/authService.js';
@@ -20,7 +19,7 @@ import { renderRescheduleQuote } from '../ui/rescheduleQuote.js';
 import { renderPaymentCheckout } from '../ui/paymentCheckout.js';
 import { bindInvoiceDownloadButtons } from '../ui/invoicePdf.js';
 
-let activeTab = 'bookings'; // 'bookings' | 'favorites' | 'profile'
+let activeTab = 'bookings'; // 'bookings' | 'favorites'
 
 export function renderMyBookingsPage() {
   const root = document.getElementById('appRoot');
@@ -31,30 +30,14 @@ export function renderMyBookingsPage() {
   root.innerHTML = `
     <div class="page-banner" style="padding: 40px 20px;">
       <div class="breadcrumbs"><a href="/" style="color:inherit;text-decoration:none;">Trang Chủ</a> / Lịch Của Tôi</div>
-      <h1 style="font-size: 2.2rem;">TRUNG TÂM KHÁCH HÀNG &amp; LỊCH HẸN</h1>
-      <p>Tra cứu lịch trị liệu, đánh giá trải nghiệm và quản lý các liệu trình spa yêu thích.</p>
+      <h1 style="font-size: 2.2rem;">LỊCH CỦA TÔI</h1>
+      <p>Theo dõi danh sách lịch hẹn và quản lý các liệu trình spa yêu thích của bạn.</p>
     </div>
 
     <div class="section-container" style="padding-top: 35px; padding-bottom: 70px;">
-      <!-- Khối Đăng Nhập / Thông Tin Tài Khoản -->
-      <div style="background: #fff; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); padding: 20px; margin-bottom: 30px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 15px;">
-        ${currentUser ? `
-          <div style="display: flex; align-items: center; gap: 15px;">
-            <div style="width: 50px; height: 50px; border-radius: 50%; background: var(--primary-brown); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: bold;">
-              ${currentUser.name.charAt(0).toUpperCase()}
-            </div>
-            <div>
-              <div style="font-weight: bold; font-size: 16px; color: var(--text-dark);">
-                Xin chào, ${esc(currentUser.name)}
-                <span class="badge-status badge-confirmed" style="margin-left: 6px; font-size: 10px;">${currentUser.role}</span>
-              </div>
-              <div style="font-size: 13px; color: #64748b;">${esc(currentUser.phone)} • ${esc(currentUser.email)}</div>
-            </div>
-          </div>
-          <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-            <button type="button" class="btn-outline btn-sm" id="custLogoutBtn">Đăng Xuất</button>
-          </div>
-        ` : `
+      ${!currentUser ? `
+        <!-- Khối Đăng Nhập Dành Cho Khách -->
+        <div style="background: #fff; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); padding: 20px; margin-bottom: 25px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 15px;">
           <div>
             <strong style="color: var(--text-dark); font-size: 15px;">Quý khách chưa đăng nhập?</strong>
             <p style="color: var(--text-light); font-size: 13px; margin: 4px 0 0 0;">
@@ -66,8 +49,8 @@ export function renderMyBookingsPage() {
               🔑 Đăng Nhập / Đăng Ký
             </a>
           </div>
-        `}
-      </div>
+        </div>
+      ` : ''}
 
       <!-- Tabs Navigation -->
       <div class="dash-tabs-bar">
@@ -77,11 +60,6 @@ export function renderMyBookingsPage() {
         <button type="button" class="dash-tab-btn ${activeTab === 'favorites' ? 'active' : ''}" data-tab="favorites">
           ♥ Liệu Trình Yêu Thích
         </button>
-        ${currentUser ? `
-          <button type="button" class="dash-tab-btn ${activeTab === 'profile' ? 'active' : ''}" data-tab="profile">
-            👤 Hồ Sơ Của Tôi
-          </button>
-        ` : ''}
       </div>
 
       <!-- Tab Content Area -->
@@ -89,15 +67,9 @@ export function renderMyBookingsPage() {
     </div>
   `;
 
-  document.getElementById('custLogoutBtn')?.addEventListener('click', () => {
-    authService.logout();
-    showToast('Đã đăng xuất tài khoản.', 'normal');
-    renderMyBookingsPage();
-  });
-
   document.querySelectorAll('.dash-tab-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
-      activeTab = btn.getAttribute('data-tab');
+      activeTab = btn.getAttribute('data-tab') === 'favorites' ? 'favorites' : 'bookings';
       document.querySelectorAll('.dash-tab-btn').forEach((b) => b.classList.remove('active'));
       btn.classList.add('active');
       renderTabContent();
@@ -113,12 +85,11 @@ function renderTabContent() {
 
   const currentUser = authService.getCurrentUser();
 
-  if (activeTab === 'bookings') {
-    renderBookingsTab(container, currentUser);
-  } else if (activeTab === 'favorites') {
+  if (activeTab === 'favorites') {
     renderFavoritesTab(container, currentUser);
-  } else if (activeTab === 'profile') {
-    renderProfileTab(container, currentUser);
+  } else {
+    activeTab = 'bookings';
+    renderBookingsTab(container, currentUser);
   }
 }
 
@@ -527,163 +498,6 @@ function renderFavoritesTab(container, currentUser) {
   `;
 }
 
-/* ---------------- TAB HỒ SƠ ---------------- */
-function renderProfileTab(container, currentUser) {
-  const bookings = bookingService.byCustomer(currentUser.id, currentUser.phone);
-  const completedCount = bookings.filter((b) => b.status === 'Completed').length;
-  const favorites = favoriteService.list(currentUser.id);
-  const roleBadgeText = currentUser.role === 'admin' ? 'Quản Trị Viên' : (currentUser.role === 'staff' ? 'Chuyên Viên' : 'Khách Hàng');
-
-  container.innerHTML = `
-    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 24px; align-items: start;">
-      <!-- Cột Trái: Thông Tin Cá Nhân & Đổi Mật Khẩu -->
-      <div style="display: flex; flex-direction: column; gap: 24px;">
-        <div style="background: #fff; border-radius: 12px; padding: 28px; box-shadow: 0 2px 12px rgba(0,0,0,0.04); border: 1px solid #f1f5f9;">
-          <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 20px;">
-            <div style="width: 36px; height: 36px; border-radius: 8px; background: #fef3c7; color: #b45309; display: flex; align-items: center; justify-content: center; font-size: 18px;">👤</div>
-            <div>
-              <h3 style="font-family: var(--font-heading); font-size: 1.25rem; color: var(--text-dark); margin: 0;">Thông Tin Cá Nhân</h3>
-              <p style="font-size: 12px; color: #64748b; margin: 2px 0 0 0;">Cập nhật họ tên, số điện thoại và email liên lạc của bạn</p>
-            </div>
-          </div>
-
-          <div class="form-group" style="margin-bottom: 16px;">
-            <label style="font-weight: 600; font-size: 13px; color: #334155; margin-bottom: 6px; display: block;">Họ và Tên</label>
-            <input type="text" class="form-control" id="profNameInput" value="${esc(currentUser.name)}" placeholder="Nhập họ và tên..." />
-          </div>
-          <div class="form-group" style="margin-bottom: 16px;">
-            <label style="font-weight: 600; font-size: 13px; color: #334155; margin-bottom: 6px; display: block;">Số Điện Thoại</label>
-            <input type="tel" class="form-control" id="profPhoneInput" value="${esc(currentUser.phone)}" placeholder="09xxxxxxxx" />
-          </div>
-          <div class="form-group" style="margin-bottom: 20px;">
-            <label style="font-weight: 600; font-size: 13px; color: #334155; margin-bottom: 6px; display: block;">Địa Chỉ Email</label>
-            <input type="email" class="form-control" id="profEmailInput" value="${esc(currentUser.email)}" placeholder="email@example.com" />
-          </div>
-          <button type="button" class="btn-primary" id="saveProfileBtn" style="padding: 11px 24px; font-size: 14px; width: 100%;">
-            Lưu Thay Đổi
-          </button>
-        </div>
-
-        <div style="background: #fff; border-radius: 12px; padding: 28px; box-shadow: 0 2px 12px rgba(0,0,0,0.04); border: 1px solid #f1f5f9;">
-          <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px;">
-            <div style="width: 36px; height: 36px; border-radius: 8px; background: #f1f5f9; color: #475569; display: flex; align-items: center; justify-content: center; font-size: 18px;">🔒</div>
-            <div>
-              <h4 style="font-family: var(--font-heading); font-size: 1.15rem; color: var(--text-dark); margin: 0;">Đổi Mật Khẩu</h4>
-              <p style="font-size: 12px; color: #64748b; margin: 2px 0 0 0;">Bảo mật tài khoản với mật khẩu mạnh</p>
-            </div>
-          </div>
-          <div class="form-group" style="margin-bottom: 14px;">
-            <label for="currentPasswordInput" style="font-weight: 600; font-size: 13px; color: #334155; margin-bottom: 6px; display: block;">Mật khẩu hiện tại</label>
-            <input type="password" class="form-control" id="currentPasswordInput" autocomplete="current-password" placeholder="Nhập mật khẩu đang dùng..." />
-          </div>
-          <div class="form-group" style="margin-bottom: 14px;">
-            <label for="newPasswordInput" style="font-weight: 600; font-size: 13px; color: #334155; margin-bottom: 6px; display: block;">Mật khẩu mới</label>
-            <input type="password" class="form-control" id="newPasswordInput" autocomplete="new-password" minlength="8" placeholder="Nhập mật khẩu mới..." />
-            <small style="display: block; margin-top: 5px; color: #64748b; font-size: 12px;">Ít nhất 8 ký tự, gồm một chữ số và một ký tự đặc biệt.</small>
-          </div>
-          <div class="form-group" style="margin-bottom: 20px;">
-            <label for="confirmNewPasswordInput" style="font-weight: 600; font-size: 13px; color: #334155; margin-bottom: 6px; display: block;">Xác nhận mật khẩu mới</label>
-            <input type="password" class="form-control" id="confirmNewPasswordInput" autocomplete="new-password" minlength="8" placeholder="Nhập lại mật khẩu mới..." />
-          </div>
-          <button type="button" class="btn-outline" id="changePasswordBtn" style="width: 100%; padding: 11px 20px; font-size: 14px;">
-            Cập Nhật Mật Khẩu
-          </button>
-        </div>
-      </div>
-
-      <!-- Cột Phải: Thẻ Thành Viên & Hoạt Động & Lối Tắt -->
-      <div style="display: flex; flex-direction: column; gap: 24px;">
-        <!-- Thẻ Tổng Quan Tài Khoản -->
-        <div style="background: linear-gradient(135deg, #3d271d 0%, #291a13 100%); color: #fff; border-radius: 12px; padding: 28px; box-shadow: 0 6px 20px rgba(41,26,19,0.15); position: relative; overflow: hidden;">
-          <div style="position: absolute; right: -20px; bottom: -20px; font-size: 130px; opacity: 0.06; line-height: 1; user-select: none;">✿</div>
-          <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 24px;">
-            <div style="width: 60px; height: 60px; border-radius: 50%; background: rgba(255,255,255,0.15); border: 2px solid rgba(255,255,255,0.3); display: flex; align-items: center; justify-content: center; font-size: 26px; font-weight: bold; color: #fef3c7;">
-              ${currentUser.name.charAt(0).toUpperCase()}
-            </div>
-            <div>
-              <div style="font-size: 18px; font-weight: bold; letter-spacing: 0.3px;">${esc(currentUser.name)}</div>
-              <div style="font-size: 13px; color: rgba(255,255,255,0.7); margin-top: 2px;">${esc(currentUser.email)}</div>
-              <span style="display: inline-block; margin-top: 8px; font-size: 11px; padding: 3px 10px; border-radius: 999px; background: rgba(255,255,255,0.18); color: #fde68a; font-weight: 600; letter-spacing: 0.5px;">
-                ${roleBadgeText}
-              </span>
-            </div>
-          </div>
-
-          <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; background: rgba(0,0,0,0.2); border-radius: 8px; padding: 14px; text-align: center;">
-            <div>
-              <div style="font-size: 20px; font-weight: bold; color: #fde68a;">${bookings.length}</div>
-              <div style="font-size: 11px; color: rgba(255,255,255,0.75); margin-top: 2px;">Tổng lịch hẹn</div>
-            </div>
-            <div>
-              <div style="font-size: 20px; font-weight: bold; color: #86efac;">${completedCount}</div>
-              <div style="font-size: 11px; color: rgba(255,255,255,0.75); margin-top: 2px;">Đã hoàn thành</div>
-            </div>
-            <div>
-              <div style="font-size: 20px; font-weight: bold; color: #f472b6;">${favorites.length}</div>
-              <div style="font-size: 11px; color: rgba(255,255,255,0.75); margin-top: 2px;">Yêu thích</div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Khối Tiện Ích & Lối Tắt Nhanh -->
-        <div style="background: #fff; border-radius: 12px; padding: 26px; box-shadow: 0 2px 12px rgba(0,0,0,0.04); border: 1px solid #f1f5f9;">
-          <h4 style="font-family: var(--font-heading); font-size: 1.15rem; color: var(--text-dark); margin: 0 0 16px 0;">Lối Tắt Nhanh</h4>
-          <div style="display: flex; flex-direction: column; gap: 10px;">
-            <a href="/dat-lich" class="btn-outline" style="display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-radius: 8px; text-decoration: none; font-size: 13.5px; color: var(--text-dark);">
-              <span>📅 Đặt lịch trị liệu mới</span>
-              <span style="color: #94a3b8;">→</span>
-            </a>
-            <a href="/dich-vu" class="btn-outline" style="display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-radius: 8px; text-decoration: none; font-size: 13.5px; color: var(--text-dark);">
-              <span>💆 Khám phá bảng giá & dịch vụ</span>
-              <span style="color: #94a3b8;">→</span>
-            </a>
-            <a href="/nhac" class="btn-outline" style="display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-radius: 8px; text-decoration: none; font-size: 13.5px; color: var(--text-dark);">
-              <span>♫ Không gian âm nhạc thư giãn</span>
-              <span style="color: #94a3b8;">→</span>
-            </a>
-          </div>
-        </div>
-
-        <!-- Cam Kết Dịch Vụ -->
-        <div style="background: #fdfbf7; border: 1px dashed #d6c7b2; border-radius: 12px; padding: 20px 22px; display: flex; gap: 14px; align-items: flex-start;">
-          <span style="font-size: 24px; line-height: 1;">🌿</span>
-          <div style="font-size: 13px; color: #574838; line-height: 1.6;">
-            <strong>Chính Sách Chăm Sóc Serenity</strong><br />
-            Quý khách có thể hủy hoặc dời lịch hẹn trước tối thiểu 2 giờ mà không phát sinh thêm chi phí. Nếu cần hỗ trợ đặc biệt, hãy liên hệ hotline hoặc gửi tin nhắn cho Serenity Spa.
-          </div>
-        </div>
-      </div>
-    </div>
-  `;
-
-  document.getElementById('saveProfileBtn')?.addEventListener('click', async () => {
-    const name = document.getElementById('profNameInput')?.value.trim();
-    const phone = document.getElementById('profPhoneInput')?.value.trim();
-    const email = document.getElementById('profEmailInput')?.value.trim();
-    try {
-      await authService.updateProfile(currentUser.id, { name, phone, email });
-      showToast('Cập nhật thông tin thành công!', 'success');
-      renderMyBookingsPage();
-    } catch (err) {
-      showToast(err.message || 'Cập nhật thất bại.', 'danger');
-    }
-  });
-
-  document.getElementById('changePasswordBtn')?.addEventListener('click', async () => {
-    const currentPassword = document.getElementById('currentPasswordInput')?.value || '';
-    const newPassword = document.getElementById('newPasswordInput')?.value || '';
-    const confirmPassword = document.getElementById('confirmNewPasswordInput')?.value || '';
-    try {
-      await authService.changePassword(currentUser.id, currentPassword, newPassword, confirmPassword);
-      document.getElementById('currentPasswordInput').value = '';
-      document.getElementById('newPasswordInput').value = '';
-      document.getElementById('confirmNewPasswordInput').value = '';
-      showToast('Đã cập nhật mật khẩu thành công!', 'success');
-    } catch (error) {
-      showToast(error.message || 'Không đổi được mật khẩu.', 'danger');
-    }
-  });
-}
 
 /* Modal Đánh Giá Trải Nghiệm */
 function openReviewModal(bookingId, currentUser) {

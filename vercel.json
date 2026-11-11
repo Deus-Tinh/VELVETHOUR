@@ -9,6 +9,8 @@
     { "source": "/ve-chung-toi", "destination": "/index.html" },
     { "source": "/lien-he", "destination": "/index.html" },
     { "source": "/lich-cua-toi", "destination": "/index.html" },
+    { "source": "/tai-khoan", "destination": "/index.html" },
+    { "source": "/ho-so", "destination": "/index.html" },
     { "source": "/admin", "destination": "/index.html" },
     { "source": "/nhan-vien", "destination": "/index.html" },
     { "source": "/nhac", "destination": "/index.html" },
