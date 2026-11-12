@@ -6,7 +6,10 @@ import { AppError } from '../core/errors.js';
 import { validate, schemas, required, time, oneOf } from '../core/validators.js';
 import { timeToMin, isValidDateStr, isValidTimeStr, todayStr } from '../core/utils.js';
 import { authService } from './authService.js';
-import { buildStaffRosterExport, parseStaffRosterFile, planStaffRosterImport, applyStaffRosterPlan, staffRosterPlanSignature } from '../domain/staffRosterModel.js';
+import {
+  applyStaffRosterPlan, buildStaffRosterExport, parseStaffRosterFile,
+  planStaffRosterImport, staffRosterPlanSignature,
+} from '../domain/staffRosterModel.js';
 
 function requireAdmin() {
   if (authService.getCurrentUser()?.role !== 'admin') throw new AppError('UNAUTHORIZED', 'Chỉ quản trị viên mới được thay đổi cài đặt, nhân viên hoặc khuyến mãi.');
@@ -78,39 +81,47 @@ export const staffService = {
   exportRoster() {
     requireAdmin();
     const source = typeof window !== 'undefined' ? window.location.origin : '';
-    return buildStaffRosterExport(staffRepo.getAll(), { source });
+    return buildStaffRosterExport(staffRepo.getAll(), {
+      source,
+      categoryIds: categoryRepo.getAll().map((category) => category.id),
+    });
   },
   /** Đọc tệp và lập kế hoạch nhập — KHÔNG ghi dữ liệu. */
-  previewRosterImport(text) {
+  previewRosterImport(text, { currentStaff = staffRepo.getAll(), version = null } = {}) {
     requireAdmin();
     const categoryIds = new Set(categoryRepo.getAll().map((c) => c.id));
     const parsed = parseStaffRosterFile(text, { categoryIds });
-    const plan = planStaffRosterImport(parsed, staffRepo.getAll());
-    return { meta: parsed.meta, plan, signature: staffRosterPlanSignature(plan) };
+    const plan = planStaffRosterImport(parsed, currentStaff);
+    return { meta: parsed.meta, plan, signature: staffRosterPlanSignature(plan), version };
   },
   /**
-   * Nhập (upsert theo ID, không xóa). Đọc lại tệp và dữ liệu hiện tại; nếu khác bản xem trước thì từ chối.
-   * Ghi một lần → sự kiện data:changed → apiClient đồng bộ collection "staff" lên máy chủ.
+   * Chuẩn bị danh sách upsert theo ID. Không ghi LocalStorage; giao diện gửi trực tiếp lên API
+   * có version để server kiểm tra lại và chỉ thay đổi các ID đã xác nhận trong preview.
    */
-  applyRosterImport(text, { overwriteMatching = false, expectedSignature } = {}) {
+  applyRosterImport(text, { overwriteMatching = false, expectedSignature, currentStaff = staffRepo.getAll(), expectedVersion = null } = {}) {
     requireAdmin();
     const categoryIds = new Set(categoryRepo.getAll().map((c) => c.id));
-    const current = staffRepo.getAll();
-    const plan = planStaffRosterImport(parseStaffRosterFile(text, { categoryIds }), current);
+    const plan = planStaffRosterImport(parseStaffRosterFile(text, { categoryIds }), currentStaff);
+    if (plan.invalid.length) throw new AppError('VALIDATION', 'Tệp còn dòng không hợp lệ; không thể nhập.');
     if (expectedSignature !== staffRosterPlanSignature(plan)) {
       throw new AppError('ROSTER_STALE', 'Dữ liệu chuyên viên trên site đã thay đổi kể từ lúc xem trước. Hãy chọn lại tệp để xem trước lần nữa.');
     }
-    const merged = applyStaffRosterPlan(plan, current, { overwriteMatching });
+    // Run the same merge limits client-side for clear preview feedback; only touched
+    // records are sent to the server, which repeats the limits in its transaction.
+    applyStaffRosterPlan(plan, currentStaff, { overwriteMatching });
     const createdIds = plan.creates.map((item) => item.record.id);
     const updatedIds = overwriteMatching ? plan.updates.map((item) => item.record.id) : [];
-    const touched = new Set([...createdIds, ...updatedIds]);
-    const written = merged.filter((record) => touched.has(record.id));
-    written.forEach(checkStaff);
-    if (touched.size) staffRepo.replaceAll(merged);
+    const records = [
+      ...plan.creates.map((item) => item.record),
+      ...(overwriteMatching ? plan.updates.map((item) => item.record) : []),
+    ];
+    records.forEach(checkStaff);
     return {
-      createdIds, updatedIds, written,
+      createdIds, updatedIds, records,
       skippedUpdates: overwriteMatching ? 0 : plan.updates.length,
-      unchanged: plan.unchanged.length, preserved: plan.preserved.length, wrote: touched.size > 0,
+      unchanged: plan.unchanged.length, preserved: plan.preserved.length,
+      preservedIds: plan.preserved.map((staff) => staff.id),
+      expectedVersion, wrote: records.length > 0,
     };
   },
 };

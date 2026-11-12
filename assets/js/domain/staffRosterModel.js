@@ -30,10 +30,11 @@ export const STAFF_ROSTER_FIELDS = Object.freeze([
 const FIELD_SET = new Set(STAFF_ROSTER_FIELDS);
 /** Trường so sánh khi quyết định "thay đổi" hay "giống hệt" (bỏ qua mốc thời gian). */
 const COMPARE_FIELDS = STAFF_ROSTER_FIELDS.filter((field) => !['createdAt', 'updatedAt'].includes(field));
+const CLEARABLE_FIELDS = new Set(['imageUrl', 'imageId', 'breaks', 'breakStart', 'breakEnd']);
 
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/;
 const IMAGE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/;
-const DATA_IMAGE_RE = /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/;
+const DATA_IMAGE_RE = /^data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/]+={0,2})$/i;
 
 export class StaffRosterError extends Error {
   constructor(message, code = 'ROSTER_INVALID') {
@@ -45,20 +46,40 @@ export class StaffRosterError extends Error {
 
 /** Chỉ giữ các trường nhân viên trong whitelist (dùng khi xuất). */
 export function pickStaffRosterFields(staff) {
+  if (!staff || typeof staff !== 'object' || Array.isArray(staff)) {
+    throw new StaffRosterError('Hồ sơ chuyên viên không hợp lệ.');
+  }
   const out = {};
   for (const field of STAFF_ROSTER_FIELDS) {
     if (staff[field] === undefined) continue;
-    if (['imageUrl', 'breaks', 'breakStart', 'breakEnd'].includes(field)
-        && (staff[field] === null || staff[field] === '')) continue;
-    out[field] = structuredClone(staff[field]);
+    const value = staff[field];
+    // Empty optional strings are the legacy representation of "no value". Export
+    // them as explicit null so a later overwrite can clear them intentionally.
+    out[field] = CLEARABLE_FIELDS.has(field) && value === '' ? null : structuredClone(value);
   }
   return out;
 }
 
-export function buildStaffRosterExport(staffList, { source = '', exportedAt = new Date().toISOString() } = {}) {
-  const staff = (staffList || []).map(pickStaffRosterFields);
+export function buildStaffRosterExport(staffList, { source = '', exportedAt = new Date().toISOString(), categoryIds } = {}) {
+  if (!Array.isArray(staffList)) throw new StaffRosterError('Danh sách chuyên viên không hợp lệ.');
+  if (categoryIds !== undefined && !(categoryIds instanceof Set) && !Array.isArray(categoryIds)) {
+    throw new StaffRosterError('Danh sách danh mục nguồn không hợp lệ.');
+  }
+  const staff = staffList.map(pickStaffRosterFields);
   if (staff.length > STAFF_ROSTER_MAX_RECORDS) {
     throw new StaffRosterError(`Tối đa ${STAFF_ROSTER_MAX_RECORDS} chuyên viên mỗi lần xuất.`, 'ROSTER_TOO_LARGE');
+  }
+  const availableCategoryIds = categoryIds === undefined
+    ? new Set(staff.flatMap((record) => Array.isArray(record.specialties) ? record.specialties : []))
+    : new Set(categoryIds);
+  const ids = new Set();
+  for (const record of staff) {
+    if (ids.has(record.id)) throw new StaffRosterError(`ID chuyên viên bị trùng: ${String(record.id)}.`);
+    ids.add(record.id);
+    const validation = validateStaffRosterRow(record, availableCategoryIds);
+    if (validation.errors.length) {
+      throw new StaffRosterError(`Không thể xuất hồ sơ ${String(record.id || '(không có ID)')}: ${validation.errors.join(' ')}`);
+    }
   }
   const payload = {
     format: STAFF_ROSTER_FORMAT,
@@ -84,12 +105,38 @@ function isIsoTimestamp(value) {
 }
 
 function classifyImageUrl(value) {
+  if (value === null) return { ok: true, kind: 'cleared' };
   if (typeof value !== 'string' || !value) return { ok: false };
   if (value.startsWith('data:')) {
-    return { ok: value.length <= MAX_IMAGE_DATA_URL_CHARS && DATA_IMAGE_RE.test(value), kind: 'embedded' };
+    const match = DATA_IMAGE_RE.exec(value);
+    if (!match || value.length > MAX_IMAGE_DATA_URL_CHARS || match[2].length % 4 !== 0) return { ok: false };
+    let bytes;
+    try { bytes = Uint8Array.from(atob(match[2]), (character) => character.charCodeAt(0)); }
+    catch { return { ok: false }; }
+    const ascii = (start, end) => String.fromCharCode(...bytes.slice(start, end));
+    let signatureMatches = false;
+    if (match[1].toLowerCase() === 'png' && bytes.length >= 24) {
+      const header = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      signatureMatches = ascii(0, 8) === '\x89PNG\r\n\x1a\n'
+        && ascii(12, 16) === 'IHDR' && header.getUint32(16, false) > 0 && header.getUint32(20, false) > 0;
+    } else if (match[1].toLowerCase() === 'jpeg' && bytes.length >= 4) {
+      signatureMatches = bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
+        && bytes[bytes.length - 2] === 0xff && bytes[bytes.length - 1] === 0xd9;
+    } else if (match[1].toLowerCase() === 'webp' && bytes.length >= 12) {
+      const header = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      signatureMatches = ascii(0, 4) === 'RIFF' && ascii(8, 12) === 'WEBP'
+        && header.getUint32(4, true) === bytes.length - 8;
+    }
+    return { ok: signatureMatches, kind: 'embedded' };
   }
   if (value.length > MAX_URL_CHARS || /[\s"'<>]/.test(value)) return { ok: false };
-  if (/^https:\/\/[^/]/i.test(value)) return { ok: true, kind: 'absolute' };
+  if (/^https:\/\/[^/]/i.test(value)) {
+    try {
+      const url = new URL(value);
+      if (url.protocol === 'https:' && url.hostname && !url.username && !url.password) return { ok: true, kind: 'absolute' };
+    } catch { /* rejected below */ }
+    return { ok: false };
+  }
   if (value.startsWith('/') && !value.startsWith('//')) return { ok: true, kind: 'relative' };
   return { ok: false };
 }
@@ -139,27 +186,45 @@ export function validateStaffRosterRow(row, categoryIds) {
     }
   }
 
-  if (row.breaks !== undefined) {
+  const hasValidShift = isValidTimeStr(row.shiftStart) && isValidTimeStr(row.shiftEnd)
+    && timeToMin(row.shiftStart) < timeToMin(row.shiftEnd);
+  if (row.breaks !== undefined && row.breaks !== null) {
     const validBreak = (b) => b && typeof b === 'object' && !Array.isArray(b)
       && Object.keys(b).every((key) => key === 'startTime' || key === 'endTime')
-      && isValidTimeStr(b.startTime) && isValidTimeStr(b.endTime) && timeToMin(b.startTime) < timeToMin(b.endTime);
-    if (!Array.isArray(row.breaks) || row.breaks.length > 10 || !row.breaks.every(validBreak)) {
+      && isValidTimeStr(b.startTime) && isValidTimeStr(b.endTime)
+      && timeToMin(b.startTime) < timeToMin(b.endTime)
+      && hasValidShift && timeToMin(b.startTime) >= timeToMin(row.shiftStart)
+      && timeToMin(b.endTime) <= timeToMin(row.shiftEnd);
+    const breaks = Array.isArray(row.breaks) ? [...row.breaks].sort((a, b) => String(a?.startTime).localeCompare(String(b?.startTime))) : [];
+    const overlaps = breaks.some((item, index) => index > 0
+      && isValidTimeStr(item?.startTime) && isValidTimeStr(breaks[index - 1]?.endTime)
+      && timeToMin(item.startTime) < timeToMin(breaks[index - 1].endTime));
+    if (!Array.isArray(row.breaks) || row.breaks.length > 10 || !row.breaks.every(validBreak) || overlaps) {
       errors.push('Danh sách giờ nghỉ không hợp lệ.');
     }
   }
   if (row.breakStart !== undefined || row.breakEnd !== undefined) {
-    if (!isValidTimeStr(row.breakStart) || !isValidTimeStr(row.breakEnd) || timeToMin(row.breakStart) >= timeToMin(row.breakEnd)) {
+    const explicitlyCleared = row.breakStart === null && row.breakEnd === null;
+    const validRange = isValidTimeStr(row.breakStart) && isValidTimeStr(row.breakEnd)
+      && timeToMin(row.breakStart) < timeToMin(row.breakEnd)
+      && hasValidShift && timeToMin(row.breakStart) >= timeToMin(row.shiftStart)
+      && timeToMin(row.breakEnd) <= timeToMin(row.shiftEnd);
+    if (!explicitlyCleared && !validRange) {
       errors.push('Khung giờ nghỉ (breakStart/breakEnd) không hợp lệ.');
     }
   }
 
   if (row.active !== undefined && typeof row.active !== 'boolean') errors.push('Trạng thái "active" phải là true/false.');
-  if (row.imageId !== undefined && (typeof row.imageId !== 'string' || !IMAGE_ID_RE.test(row.imageId))) errors.push('Mã ảnh (imageId) không hợp lệ.');
+  if (row.imageId !== undefined && row.imageId !== null
+      && (typeof row.imageId !== 'string' || !IMAGE_ID_RE.test(row.imageId))) errors.push('Mã ảnh (imageId) không hợp lệ.');
+  if (row.imageId != null) warnings.push('Mã ảnh phụ thuộc bộ tài nguyên đã cài trên site đích; hãy kiểm tra ảnh sau khi chuyển.');
 
   if (row.imageUrl !== undefined) {
     const image = classifyImageUrl(row.imageUrl);
     if (!image.ok) errors.push('Ảnh (imageUrl) phải là ảnh nhúng PNG/JPEG/WebP ≤ 600 KB, URL https:// hoặc đường dẫn bắt đầu bằng "/".');
-    else if (image.kind === 'relative') warnings.push('Ảnh dùng đường dẫn tương đối — tệp có thể không tồn tại trên site đích.');
+    else if (image.kind === 'absolute' || image.kind === 'relative') {
+      warnings.push('Đường dẫn ảnh chưa được kiểm tra có tồn tại hoặc truy cập được trên site đích.');
+    }
   }
 
   if (row.createdAt !== undefined && !isIsoTimestamp(row.createdAt)) errors.push('createdAt không hợp lệ.');
@@ -169,8 +234,6 @@ export function validateStaffRosterRow(row, categoryIds) {
   const record = pickStaffRosterFields(row);
   record.name = name;
   record.title = title;
-  if (record.active === undefined) record.active = true;
-  if (record.daysOff === undefined) record.daysOff = [];
   return { record, errors, warnings };
 }
 
@@ -179,8 +242,9 @@ export function validateStaffRosterRow(row, categoryIds) {
  * Dòng lỗi KHÔNG bị bỏ qua âm thầm: được trả trong `invalid` để giao diện chặn nhập.
  */
 export function parseStaffRosterFile(text, { categoryIds }) {
-  if (typeof text !== 'string' || !text.trim()) throw new StaffRosterError('Tệp rỗng.');
+  if (typeof text !== 'string') throw new StaffRosterError('Tệp rỗng.');
   if (byteLength(text) > STAFF_ROSTER_MAX_FILE_BYTES) throw new StaffRosterError('Tệp lớn hơn 6 MB.', 'ROSTER_TOO_LARGE');
+  if (!text.trim()) throw new StaffRosterError('Tệp rỗng.');
   let payload;
   try { payload = JSON.parse(text); } catch { throw new StaffRosterError('Tệp không phải JSON hợp lệ.'); }
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new StaffRosterError('Tệp phải là đối tượng JSON xuất từ chức năng "Xuất hồ sơ chuyên viên".');
@@ -189,9 +253,8 @@ export function parseStaffRosterFile(text, { categoryIds }) {
   const allowedTop = new Set(['format', 'version', 'kind', 'exportedAt', 'source', 'count', 'staff']);
   const extraTop = Object.keys(payload).filter((key) => !allowedTop.has(key));
   if (extraTop.length) throw new StaffRosterError(`Tệp chứa mục không thuộc hồ sơ chuyên viên: ${extraTop.join(', ')}.`);
-  if (payload.kind !== undefined && payload.kind !== 'staff-only') throw new StaffRosterError('Trường "kind" phải là "staff-only".');
+  if (payload.kind !== 'staff-only') throw new StaffRosterError('Trường "kind" phải là "staff-only".');
   if (!Array.isArray(payload.staff)) throw new StaffRosterError('Thiếu danh sách "staff".');
-  if (!payload.staff.length) throw new StaffRosterError('Danh sách "staff" rỗng.');
   if (payload.staff.length > STAFF_ROSTER_MAX_RECORDS) throw new StaffRosterError(`Tối đa ${STAFF_ROSTER_MAX_RECORDS} chuyên viên mỗi lần nhập.`, 'ROSTER_TOO_LARGE');
   if (payload.count !== undefined && payload.count !== payload.staff.length) {
     throw new StaffRosterError(`Số lượng khai báo (${String(payload.count)}) khác số dòng thực tế (${payload.staff.length}). Tệp có thể bị cắt hoặc sửa tay.`);
@@ -222,11 +285,12 @@ function normalizedField(record, field) {
   const value = record[field];
   if (field === 'active') return value !== false;
   if (field === 'daysOff') return Array.isArray(value) ? value : [];
+  if (CLEARABLE_FIELDS.has(field) && (value === undefined || value === null || value === '')) return null;
   return value ?? null;
 }
 
 function changedFields(current, incoming) {
-  return COMPARE_FIELDS.filter((field) => field !== 'id'
+  return COMPARE_FIELDS.filter((field) => field !== 'id' && incoming[field] !== undefined
     && JSON.stringify(normalizedField(current, field)) !== JSON.stringify(normalizedField(incoming, field)));
 }
 
@@ -252,16 +316,30 @@ export function planStaffRosterImport(parsed, currentStaff) {
     else updates.push({ ...item, existing, fields });
   }
   const preserved = (currentStaff || []).filter((staff) => !importedIds.has(staff.id));
-  return { creates, updates, unchanged, preserved, invalid: parsed.invalid, total: parsed.total };
+  return { creates, updates, unchanged, preserved, invalid: parsed.invalid, total: parsed.total,
+    targetSnapshot: structuredClone(currentStaff || []) };
 }
 
-/** Chữ ký ổn định của một kế hoạch để phát hiện dữ liệu đích đã đổi giữa lúc xem trước và lúc nhập. */
+function stableValue(value) {
+  if (Array.isArray(value)) return value.map(stableValue);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stableValue(value[key])]));
+  }
+  return value;
+}
+
+/** Chữ ký của toàn bộ hồ sơ ở site đích và dữ liệu nhập để phát hiện preview cũ. */
 export function staffRosterPlanSignature(plan) {
+  const incoming = [
+    ...plan.creates.map((item) => item.record),
+    ...plan.updates.map((item) => item.record),
+    ...plan.unchanged.map((item) => item.record),
+  ].map(stableValue).sort((a, b) => String(a.id).localeCompare(String(b.id)));
+  const target = (plan.targetSnapshot || []).map(stableValue)
+    .sort((a, b) => String(a.id).localeCompare(String(b.id)));
   return JSON.stringify({
-    c: plan.creates.map((item) => item.record.id).sort(),
-    u: plan.updates.map((item) => `${item.record.id}@${item.existing?.updatedAt || ''}`).sort(),
-    n: plan.unchanged.map((item) => `${item.record.id}@${item.existing?.updatedAt || ''}`).sort(),
-    p: plan.preserved.map((staff) => staff.id).sort(),
+    target,
+    incoming,
   });
 }
 
@@ -277,14 +355,17 @@ export function applyStaffRosterPlan(plan, currentStaff, { overwriteMatching = f
     if (!incoming) return staff;
     const { createdAt: _c, updatedAt: _u, ...fields } = incoming;
     const next = { ...staff, ...fields, id: staff.id, createdAt: staff.createdAt || incoming.createdAt || now, updatedAt: now };
-    // Trường tùy chọn không có trong tệp nguồn thì gỡ khỏi bản đích để phản ánh đúng hồ sơ nguồn.
-    for (const optional of ['imageUrl', 'imageId', 'breaks', 'breakStart', 'breakEnd']) {
-      if (incoming[optional] === undefined) delete next[optional];
+    // Missing fields preserve the destination value; explicit null requests a clear.
+    for (const optional of CLEARABLE_FIELDS) {
+      if (incoming[optional] === null) delete next[optional];
     }
     return next;
   });
   for (const item of plan.creates) {
-    merged.push({ ...item.record, createdAt: item.record.createdAt || now, updatedAt: now });
+    const record = { active: true, daysOff: [], ...item.record,
+      createdAt: item.record.createdAt || now, updatedAt: now };
+    for (const optional of CLEARABLE_FIELDS) if (record[optional] === null) delete record[optional];
+    merged.push(record);
   }
   if (merged.length > STAFF_COLLECTION_MAX_RECORDS) throw new StaffRosterError(`Sau khi gộp sẽ vượt quá ${STAFF_COLLECTION_MAX_RECORDS} chuyên viên.`, 'ROSTER_TOO_LARGE');
   if (byteLength(JSON.stringify({ records: merged })) > STAFF_ROSTER_MAX_COLLECTION_BYTES) {

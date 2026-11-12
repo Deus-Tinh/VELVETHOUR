@@ -20,7 +20,8 @@ let pricingDate = todayStr();
 let refreshTimer = null;
 let lastSnapshot = null;
 const SYNC_STATE_KEY = '__shared_sync_state';
-const syncState = readJSON(SYNC_STATE_KEY, { dirty: [], baselines: {} });
+const syncState = readJSON(SYNC_STATE_KEY, { dirty: [], baselines: {}, conflicts: {} });
+syncState.conflicts ||= {};
 const dirtyCollections = new Set(Array.isArray(syncState.dirty) ? syncState.dirty : []);
 const syncTasks = new Map();
 const syncErrors = new Map();
@@ -31,21 +32,59 @@ function sameRecords(a, b) {
   return sort(a) === sort(b);
 }
 
-function mergeRecords(baseRows, localRows, remoteRows) {
+function sameValue(a, b) {
+  const stable = (value) => {
+    if (Array.isArray(value)) return value.map(stable);
+    if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stable(value[key])]));
+    return value;
+  };
+  return JSON.stringify(stable(a)) === JSON.stringify(stable(b));
+}
+
+export function mergeRecords(baseRows, localRows, remoteRows) {
   const base = new Map((baseRows || []).map((row) => [row.id, row]));
   const local = new Map((localRows || []).map((row) => [row.id, row]));
   const remote = new Map((remoteRows || []).map((row) => [row.id, row]));
   const ids = new Set([...base.keys(), ...local.keys(), ...remote.keys()]);
   const merged = [];
+  const conflicts = [];
   for (const id of ids) {
     const before = base.get(id);
     const localRecord = local.get(id);
     const remoteRecord = remote.get(id);
-    if (JSON.stringify(localRecord) !== JSON.stringify(before)) {
+    if (sameValue(localRecord, before)) {
+      if (remoteRecord) merged.push(remoteRecord);
+      continue;
+    }
+    if (sameValue(remoteRecord, before) || sameValue(localRecord, remoteRecord)) {
       if (localRecord) merged.push(localRecord);
-    } else if (remoteRecord) merged.push(remoteRecord);
+      continue;
+    }
+    if (before && localRecord && remoteRecord) {
+      const record = { ...remoteRecord };
+      const fields = new Set([...Object.keys(before), ...Object.keys(localRecord), ...Object.keys(remoteRecord)]);
+      const recordConflicts = [];
+      for (const field of fields) {
+        const localChanged = !sameValue(localRecord[field], before[field]);
+        const remoteChanged = !sameValue(remoteRecord[field], before[field]);
+        if (!localChanged) continue;
+        if (!remoteChanged || sameValue(localRecord[field], remoteRecord[field])) {
+          if (localRecord[field] === undefined) delete record[field];
+          else record[field] = localRecord[field];
+        } else {
+          if (localRecord[field] === undefined) delete record[field];
+          else record[field] = localRecord[field];
+          recordConflicts.push(field);
+        }
+      }
+      if (recordConflicts.length) conflicts.push({ id, fields: recordConflicts });
+      merged.push(record);
+      continue;
+    }
+    conflicts.push({ id, fields: ['$record'] });
+    if (localRecord || remoteRecord) merged.push(localRecord || remoteRecord);
   }
-  return merged;
+  return { records: merged, conflicts };
 }
 
 /** Nhận lại hồ sơ chuyên viên còn trong LocalStorage cũ khi lần đầu nối máy chủ chung. */
@@ -70,7 +109,7 @@ export function recoverLocalStaff(remoteRows, localRows) {
 
 function persistSyncState() {
   try {
-    writeJSON(SYNC_STATE_KEY, { dirty: [...dirtyCollections], baselines: syncState.baselines || {} });
+    writeJSON(SYNC_STATE_KEY, { dirty: [...dirtyCollections], baselines: syncState.baselines || {}, conflicts: syncState.conflicts || {} });
   } catch (error) {
     console.warn('[shared-data] Không thể ghi trạng thái đồng bộ vào bộ nhớ trình duyệt:', error.message);
   }
@@ -83,13 +122,14 @@ function markCollectionDirty(collection) {
     dirtyCollections.add(collection);
     persistSyncState();
   }
-  syncErrors.delete(collection);
+  if (syncErrors.get(collection)?.code !== 'SYNC_CONFLICT') syncErrors.delete(collection);
 }
 
 function clearCollectionDirty(collection, syncedRows) {
   serverBaselines[collection] = syncedRows;
   dirtyCollections.delete(collection);
   delete syncState.baselines?.[collection];
+  delete syncState.conflicts?.[collection];
   syncErrors.delete(collection);
   persistSyncState();
 }
@@ -158,13 +198,44 @@ function hydrate(snapshot) {
     let nextRows = rows;
     if (dirtyCollections.has(name)) {
       const baseline = syncState.baselines?.[name];
-      nextRows = name === 'staff' && !Array.isArray(baseline)
-        ? recoverLocalStaff(rows, currentRows)
-        : mergeRecords(baseline || [], currentRows, rows);
+      if (name === 'staff' && !Array.isArray(baseline)) {
+        nextRows = recoverLocalStaff(rows, currentRows);
+      } else {
+        const merge = mergeRecords(baseline || [], currentRows, rows);
+        nextRows = merge.records;
+        if (merge.conflicts.length) {
+          syncState.conflicts ||= {};
+          syncState.conflicts[name] = merge.conflicts;
+          syncState.baselines ||= {};
+          syncState.baselines[name] = rows;
+          persistSyncState();
+          const error = new Error('Máy chủ và thiết bị này đã sửa cùng một hồ sơ. Hãy tải lại dữ liệu, kiểm tra thay đổi rồi xác nhận lại trước khi lưu.');
+          error.status = 409;
+          error.code = 'SYNC_CONFLICT';
+          error.conflicts = merge.conflicts;
+          syncErrors.set(name, error);
+          emit('data:sync-error', { collection: name, message: error.message, conflicts: error.conflicts });
+        } else if (syncState.conflicts?.[name]?.length) {
+          const error = new Error('Có xung đột đồng bộ chưa được xác nhận. Hãy tải dữ liệu máy chủ và giải quyết thay đổi trước khi thử lại.');
+          error.status = 409;
+          error.code = 'SYNC_CONFLICT';
+          error.conflicts = syncState.conflicts[name];
+          syncErrors.set(name, error);
+        } else {
+          syncErrors.delete(name);
+        }
+      }
       if (name === 'staff') {
         syncState.baselines.staff = rows;
         syncState.staffRecoveryDone = true;
         persistSyncState();
+      }
+      if (syncState.conflicts?.[name]?.length && !syncErrors.has(name)) {
+        const error = new Error('Có xung đột đồng bộ chưa được xác nhận. Hãy tải dữ liệu máy chủ và giải quyết thay đổi trước khi thử lại.');
+        error.status = 409;
+        error.code = 'SYNC_CONFLICT';
+        error.conflicts = syncState.conflicts[name];
+        syncErrors.set(name, error);
       }
       if (sameRecords(nextRows, rows)) clearCollectionDirty(name, rows);
     } else if (name === 'staff' && !syncState.staffRecoveryDone) {
@@ -211,6 +282,8 @@ async function refresh() {
 }
 
 async function saveCollection(collection, retryConflict = true) {
+  const conflict = syncErrors.get(collection);
+  if (conflict?.code === 'SYNC_CONFLICT') throw conflict;
   const submittedRows = repos[collection].getAll();
   try {
     const result = await request(`/admin/collections/${encodeURIComponent(collection)}`, {
@@ -229,9 +302,11 @@ async function saveCollection(collection, retryConflict = true) {
     emit('data:sync-success', { collection });
   } catch (error) {
     if (error.status === 409 && retryConflict) {
-      // Gộp thay đổi theo ID rồi thử lại với version mới; giữ các bản ghi mới ở máy chủ.
+      // A 409 is safe to retry only when the three-way merge finds no same-record conflict.
       const snapshot = await request('/bootstrap');
       hydrate(snapshot);
+      const mergeConflict = syncErrors.get(collection);
+      if (mergeConflict?.code === 'SYNC_CONFLICT') throw mergeConflict;
       return saveCollection(collection, false);
     }
     throw error;
@@ -303,6 +378,22 @@ export const apiClient = {
   canSyncAdminCollections: () => online && currentRole === 'admin',
   /** Collection còn thay đổi cục bộ chưa được máy chủ xác nhận. */
   hasPendingCollectionSync: (collection) => dirtyCollections.has(collection) || syncTasks.has(collection),
+  /** Đọc trực tiếp roster và version từ API quản trị, không hydrate hoặc merge LocalStorage. */
+  async getServerStaffRoster() {
+    if (!online) throw new Error('Chưa kết nối máy chủ.');
+    if (currentRole !== 'admin') throw new Error('Phiên đăng nhập quản trị đã hết hạn.');
+    return request('/admin/collections/staff');
+  },
+  /** Upsert có điều kiện theo version; server giữ nguyên mọi hồ sơ không nằm trong records. */
+  async importStaffRoster(records, expectedVersion) {
+    if (!online) throw new Error('Chưa kết nối máy chủ.');
+    if (currentRole !== 'admin') throw new Error('Phiên đăng nhập quản trị đã hết hạn.');
+    return request('/admin/staff-roster', {
+      method: 'PUT',
+      headers: { 'If-Match': String(expectedVersion) },
+      body: JSON.stringify({ records }),
+    });
+  },
   setLocalRole(role) { if (!online) currentRole = role || null; },
   getOccupiedSlots: () => occupiedSlots.slice(),
   request,
