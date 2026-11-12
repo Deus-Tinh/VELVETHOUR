@@ -106,3 +106,24 @@ export function readHolidaySales(db, { enabledOnly = false } = {}) {
     targets: targets.get(row.id) || [],
   }));
 }
+
+/** Read holiday sales through the shared async database contract (SQLite or PostgreSQL). */
+export async function readHolidaySalesAsync(db, { enabledOnly = false } = {}) {
+  const [rows, targetRows] = await Promise.all([
+    db.prepare(`SELECT * FROM holiday_sales ${enabledOnly ? 'WHERE enabled = 1' : ''} ORDER BY id`).all(),
+    db.prepare('SELECT campaign_id, target_id, duration_minutes FROM holiday_sale_targets ORDER BY campaign_id, target_id, duration_minutes').all(),
+  ]);
+  const targets = new Map();
+  for (const row of targetRows) {
+    const list = targets.get(row.campaign_id) || [];
+    list.push({ targetId: row.target_id, durationMinutes: row.duration_minutes });
+    targets.set(row.campaign_id, list);
+  }
+  return rows.map((row) => normalizeHolidaySale({
+    id: row.id, name: row.name, occasion: row.occasion, serviceDateFrom: row.service_date_from,
+    serviceDateTo: row.service_date_to, enabled: Number(row.enabled) === 1, discountType: row.discount_type,
+    percentageBps: row.percentage_bps, fixedAmountVnd: row.fixed_amount_vnd, maxDiscountVnd: row.max_discount_vnd,
+    scopeType: row.scope_type, revision: row.revision, createdAt: row.created_at, updatedAt: row.updated_at,
+    targets: targets.get(row.id) || [],
+  }));
+}

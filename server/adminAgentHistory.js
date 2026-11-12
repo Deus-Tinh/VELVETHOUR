@@ -56,6 +56,8 @@ function effectSummaries(payload) {
 }
 
 export function createAdminAgentHistory({ db, transaction, HttpError, now = Date.now }) {
+  if (db?.async) return createAsyncAdminAgentHistory({ db, transaction, HttpError, now });
+
   const fail = (status, message, code) => { throw new HttpError(status, message, code); };
   const conversationRow = (owner, id) => db.prepare('SELECT * FROM admin_agent_conversations WHERE owner_id=? AND id=?').get(owner, id);
   const summary = (row) => ({ id: row.id, title: row.title || 'Cuộc trò chuyện mới', createdAt: new Date(row.created_at).toISOString(),
@@ -197,6 +199,185 @@ export function createAdminAgentHistory({ db, transaction, HttpError, now = Date
 
   function recoverInterrupted() {
     db.prepare("UPDATE admin_agent_messages SET state='interrupted',content=CASE WHEN role='assistant' THEN 'Yêu cầu bị gián đoạn khi máy chủ khởi động lại. Hãy kiểm tra dữ liệu và nhật ký thao tác; mở lại hội thoại không thực hiện lại lệnh.' ELSE content END WHERE state='pending'").run();
+  }
+
+  return { create, list, read, begin, history, recordEffects, finish, markFailed, remove, prune, recoverInterrupted };
+}
+
+function createAsyncAdminAgentHistory({ db, transaction, HttpError, now = Date.now }) {
+  const fail = (status, message, code) => { throw new HttpError(status, message, code); };
+  const conversationRow = (owner, id) => db.prepare(
+    'SELECT * FROM admin_agent_conversations WHERE owner_id=? AND id=?',
+  ).get(owner, id);
+  const summary = (row) => ({ id: row.id, title: row.title || 'Cuộc trò chuyện mới',
+    createdAt: new Date(Number(row.created_at)).toISOString(),
+    updatedAt: new Date(Number(row.updated_at)).toISOString(),
+    expiresAt: new Date(Number(row.expires_at)).toISOString() });
+
+  async function scrubReceipts(owner, conversationIds, cutoff = null) {
+    const ids = new Set(conversationIds || []);
+    const rows = await db.prepare("SELECT key,value FROM metadata WHERE key LIKE 'admin-agent-request:%'").all();
+    for (const row of rows) {
+      if (owner && !row.key.startsWith(`admin-agent-request:${owner}:`)) continue;
+      const receipt = JSON.parse(row.value);
+      if (receipt.response && (conversationIds === null || ids.has(receipt.response.conversationId)
+        || (cutoff !== null && receipt.savedAt && receipt.savedAt <= cutoff))) {
+        await db.prepare('UPDATE metadata SET value=? WHERE key=?')
+          .run(JSON.stringify({ messageHash: receipt.messageHash, deleted: true }), row.key);
+      }
+    }
+  }
+
+  async function prune() {
+    const time = now();
+    return transaction(async () => {
+      const expired = await db.prepare(
+        'SELECT owner_id,id FROM admin_agent_conversations WHERE deleted_at IS NULL AND expires_at<=?',
+      ).all(time);
+      for (const row of expired) {
+        await scrubReceipts(row.owner_id, [row.id]);
+        await db.prepare('DELETE FROM admin_agent_messages WHERE owner_id=? AND conversation_id=?').run(row.owner_id, row.id);
+        await db.prepare("UPDATE admin_agent_conversations SET title='',deleted_at=? WHERE owner_id=? AND id=?")
+          .run(time, row.owner_id, row.id);
+      }
+      await db.prepare('DELETE FROM admin_agent_messages WHERE created_at<=?').run(time - AGENT_HISTORY_TTL_MS);
+      // Keep each title within the same retention window as its first surviving message.
+      const active = await db.prepare(
+        "SELECT owner_id,id FROM admin_agent_conversations WHERE deleted_at IS NULL AND title!=''",
+      ).all();
+      for (const row of active) {
+        const first = await db.prepare("SELECT content FROM admin_agent_messages WHERE owner_id=? AND conversation_id=? AND role='user' ORDER BY id LIMIT 1")
+          .get(row.owner_id, row.id);
+        await db.prepare('UPDATE admin_agent_conversations SET title=? WHERE owner_id=? AND id=?')
+          .run(first?.content.slice(0, 80) || '', row.owner_id, row.id);
+      }
+      await scrubReceipts(null, [], time - AGENT_HISTORY_TTL_MS);
+      return expired.length;
+    });
+  }
+
+  async function create(owner, id = randomUUID()) {
+    const time = now();
+    await db.prepare('INSERT INTO admin_agent_conversations(owner_id,id,created_at,updated_at,expires_at) VALUES (?,?,?,?,?)')
+      .run(owner, id, time, time, time + AGENT_HISTORY_TTL_MS);
+    return summary(await conversationRow(owner, id));
+  }
+
+  async function requireConversation(owner, id) {
+    const row = await conversationRow(owner, id);
+    if (!row || row.deleted_at !== null || Number(row.expires_at) <= now()) {
+      fail(404, 'Không tìm thấy cuộc trò chuyện còn hiệu lực.', 'CONVERSATION_NOT_FOUND');
+    }
+    return row;
+  }
+
+  async function list(owner) {
+    await prune();
+    return (await db.prepare(
+      'SELECT * FROM admin_agent_conversations WHERE owner_id=? AND deleted_at IS NULL ORDER BY updated_at DESC,created_at DESC,id DESC',
+    ).all(owner)).map(summary);
+  }
+
+  async function read(owner, id, { before = null } = {}) {
+    await prune();
+    const row = await requireConversation(owner, id);
+    if (before !== null && (!Number.isSafeInteger(Number(before)) || Number(before) < 1)) {
+      fail(400, 'Mốc tin nhắn không hợp lệ.', 'VALIDATION');
+    }
+    const rows = await db.prepare(`SELECT * FROM admin_agent_messages WHERE owner_id=? AND conversation_id=? ${before === null ? '' : 'AND id < ?'} ORDER BY id DESC LIMIT 101`)
+      .all(...(before === null ? [owner, id] : [owner, id, before]));
+    const hasMore = rows.length > 100;
+    const messages = rows.slice(0, 100).reverse().map((message) => ({ id: Number(message.id), requestId: message.request_id,
+      role: message.role, content: message.content, state: message.state, metadata: JSON.parse(message.metadata_json),
+      createdAt: new Date(Number(message.created_at)).toISOString() }));
+    return { conversation: summary(row), messages, hasMore, beforeCursor: hasMore ? messages[0].id : null };
+  }
+
+  async function begin(owner, id, requestId, hash, message) {
+    await prune();
+    return transaction(async () => {
+      const row = await conversationRow(owner, id);
+      if (row && row.deleted_at !== null) {
+        fail(410, 'Cuộc trò chuyện đã bị xóa hoặc hết hạn. Hãy tạo cuộc trò chuyện mới.', 'CONVERSATION_DELETED');
+      }
+      const previous = await db.prepare("SELECT * FROM admin_agent_messages WHERE owner_id=? AND request_id=? AND role='assistant'")
+        .get(owner, requestId);
+      if (previous) {
+        if (previous.request_hash !== hash || previous.conversation_id !== id) fail(409, 'Mã yêu cầu đã dùng cho nội dung khác.', 'REQUEST_CONFLICT');
+        if (previous.state !== 'failed') fail(409, 'Yêu cầu đã được xử lý hoặc bị gián đoạn. Hãy xem lịch sử và kiểm tra dữ liệu trước khi gửi lệnh mới.', 'REQUEST_ALREADY_RECORDED');
+        await db.prepare("UPDATE admin_agent_messages SET state='pending',content=CASE WHEN role='assistant' THEN 'Đang xử lý yêu cầu…' ELSE content END,metadata_json='{}' WHERE owner_id=? AND request_id=?")
+          .run(owner, requestId);
+      } else {
+        if (!row) await create(owner, id);
+        const insert = db.prepare('INSERT INTO admin_agent_messages(owner_id,conversation_id,request_id,request_hash,role,content,state,created_at) VALUES (?,?,?,?,?,?,?,?)');
+        await insert.run(owner, id, requestId, hash, 'user', redactAgentHistoryText(message).slice(0, 1200), 'pending', now());
+        await insert.run(owner, id, requestId, hash, 'assistant', 'Đang xử lý yêu cầu…', 'pending', now());
+      }
+      await db.prepare("UPDATE admin_agent_conversations SET title=CASE WHEN title='' THEN ? ELSE title END,updated_at=?,expires_at=? WHERE owner_id=? AND id=?")
+        .run(redactAgentHistoryText(message).slice(0, 80), now(), now() + AGENT_HISTORY_TTL_MS, owner, id);
+    });
+  }
+
+  async function history(owner, id) {
+    await requireConversation(owner, id);
+    return (await db.prepare("SELECT role,content FROM admin_agent_messages WHERE owner_id=? AND conversation_id=? AND state='completed' ORDER BY id DESC LIMIT 20")
+      .all(owner, id)).reverse().map(({ role, content }) => ({ role, content }));
+  }
+
+  async function recordEffects(owner, id, requestId, payload) {
+    await requireConversation(owner, id);
+    await db.prepare("UPDATE admin_agent_messages SET metadata_json=? WHERE owner_id=? AND conversation_id=? AND request_id=? AND role='assistant' AND state='pending'")
+      .run(JSON.stringify({ effects: effectSummaries(payload) }), owner, id, requestId);
+  }
+
+  async function finish(owner, id, requestId, hash, payload) {
+    const response = { ...payload, reply: redactAgentHistoryText(payload.reply).slice(0, 1800) };
+    await transaction(async () => {
+      await requireConversation(owner, id);
+      await db.prepare("UPDATE admin_agent_messages SET state='completed' WHERE owner_id=? AND request_id=?").run(owner, requestId);
+      await db.prepare("UPDATE admin_agent_messages SET content=?,metadata_json=? WHERE owner_id=? AND request_id=? AND role='assistant'")
+        .run(response.reply, JSON.stringify({ effects: effectSummaries(payload) }), owner, requestId);
+      await db.prepare('UPDATE admin_agent_conversations SET updated_at=?,expires_at=? WHERE owner_id=? AND id=?')
+        .run(now(), now() + AGENT_HISTORY_TTL_MS, owner, id);
+      await db.prepare('INSERT INTO metadata(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value')
+        .run(`admin-agent-request:${owner}:${requestId}`, JSON.stringify({ messageHash: hash, response, savedAt: now() }));
+    });
+    return response;
+  }
+
+  async function markFailed(owner, requestId, message, code) {
+    await transaction(async () => {
+      await db.prepare("UPDATE admin_agent_messages SET state='failed' WHERE owner_id=? AND request_id=?").run(owner, requestId);
+      const existing = await db.prepare("SELECT metadata_json FROM admin_agent_messages WHERE owner_id=? AND request_id=? AND role='assistant'")
+        .get(owner, requestId);
+      let metadata = {};
+      try { metadata = JSON.parse(existing?.metadata_json || '{}'); } catch {}
+      metadata.errorCode = code;
+      await db.prepare("UPDATE admin_agent_messages SET content=?,metadata_json=? WHERE owner_id=? AND request_id=? AND role='assistant'")
+        .run(redactAgentHistoryText(message).slice(0, 1800), JSON.stringify(metadata), owner, requestId);
+    });
+  }
+
+  async function remove(owner, id = null) {
+    return transaction(async () => {
+      if (id) await requireConversation(owner, id);
+      const rows = id ? [{ id }] : await db.prepare(
+        'SELECT id FROM admin_agent_conversations WHERE owner_id=? AND deleted_at IS NULL',
+      ).all(owner);
+      const ids = rows.map((row) => row.id);
+      await scrubReceipts(owner, id ? ids : null);
+      for (const conversationId of ids) {
+        await db.prepare('DELETE FROM admin_agent_messages WHERE owner_id=? AND conversation_id=?').run(owner, conversationId);
+        await db.prepare("UPDATE admin_agent_conversations SET title='',deleted_at=? WHERE owner_id=? AND id=?")
+          .run(now(), owner, conversationId);
+      }
+      return { deletedCount: ids.length };
+    });
+  }
+
+  async function recoverInterrupted() {
+    await db.prepare("UPDATE admin_agent_messages SET state='interrupted',content=CASE WHEN role='assistant' THEN 'Yêu cầu bị gián đoạn khi máy chủ khởi động lại. Hãy kiểm tra dữ liệu và nhật ký thao tác; mở lại hội thoại không thực hiện lại lệnh.' ELSE content END WHERE state='pending'")
+      .run();
   }
 
   return { create, list, read, begin, history, recordEffects, finish, markFailed, remove, prune, recoverInterrupted };
