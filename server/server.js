@@ -158,6 +158,7 @@ const q = {
   deleteCollection: db.prepare('DELETE FROM collection_records WHERE collection = ?'),
   version: db.prepare('SELECT version FROM collection_versions WHERE collection = ?'),
   setVersion: db.prepare('INSERT INTO collection_versions(collection, version) VALUES (?, ?) ON CONFLICT(collection) DO UPDATE SET version = excluded.version'),
+  incrementVersion: db.prepare('INSERT INTO collection_versions(collection, version) VALUES (?, 1) ON CONFLICT(collection) DO UPDATE SET version = collection_versions.version + 1 RETURNING version'),
   meta: db.prepare('SELECT value FROM metadata WHERE key = ?'),
   setMeta: db.prepare('INSERT INTO metadata(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'),
   sessionByHash: db.prepare('SELECT user_id, expires_at FROM sessions WHERE token_hash = ?'),
@@ -201,7 +202,7 @@ const q = {
 await q.deleteExpiredSessions.run(Date.now());
 await q.deleteExpiredPasswordResetOtps.run(Date.now());
 
-function transaction(work) { return db.transaction(work); }
+function transaction(work, options) { return db.transaction(work, options); }
 
 
 // ── In-memory row cache ───────────────────────────────────────────────────────
@@ -252,8 +253,8 @@ async function removeRecord(collection, id) {
 }
 async function versionOf(collection) { return (await q.version.get(collection))?.version || 0; }
 async function nextVersion(collection) {
-  const version = Number(await versionOf(collection)) + 1;
-  await q.setVersion.run(collection, version);
+  const row = await q.incrementVersion.get(collection);
+  const version = Number(row.version);
   invalidateRowCache(collection);
   return version;
 }
@@ -630,20 +631,24 @@ async function findConflict({ staffId, date, startTime, durationMinutes, slotSte
   return (await activeBookings()).some((booking) => {
     if (booking.id === excludeId || booking.staffId !== staffId || booking.date !== date) return false;
     const bookingStart = minOf(booking.startTime);
-    const storedDuration = Number(booking.duration);
-    const actualDuration = Number.isInteger(storedDuration) && storedDuration > 0
-      ? storedDuration
-      : minOf(booking.endTime) - bookingStart;
+    const actualDuration = actualBookingEndMinute(booking) - bookingStart;
     const bookingLockEnd = bookingLockEndMinute(bookingStart, actualDuration, slotStep);
     return overlap(requestedStart, requestedEnd, bookingStart, bookingLockEnd);
   });
 }
-async function allocateRoom({ date, startTime, endTime, excludeId = null, roomCount = 0 }) {
+function actualBookingEndMinute(booking) {
+  const start = minOf(booking.startTime);
+  const duration = Number(booking.duration);
+  if (Number.isInteger(duration) && duration > 0 && duration <= 480) return start + duration;
+  return minOf(booking.endTime);
+}
+async function allocateRoom({ date, startTime, durationMinutes, excludeId = null, roomCount = 0 }) {
   const capacity = Number(roomCount ?? 0);
   if (!Number.isSafeInteger(capacity) || capacity < 0 || capacity > 100) throw new HttpError(503, 'Cài đặt số phòng chưa hợp lệ. Vui lòng báo quản trị viên.', 'SCHEDULE_INVALID');
   if (capacity <= 0) return null;
+  const requestedEnd = minOf(startTime) + durationMinutes;
   const overlapping = (await activeBookings()).filter((booking) => booking.id !== excludeId && booking.date === date &&
-    overlap(minOf(startTime), minOf(endTime), minOf(booking.startTime), minOf(booking.endTime)));
+    overlap(minOf(startTime), requestedEnd, minOf(booking.startTime), actualBookingEndMinute(booking)));
   const used = new Set();
   let unassignedCount = 0;
   for (const booking of overlapping) {
@@ -707,7 +712,7 @@ async function assertSlot({ serviceId, duration, staffId, date, startTime, exclu
   if (await findConflict({ staffId, date, startTime, durationMinutes, slotStep, excludeId })) {
     throw new HttpError(409, 'Chuyên viên bận giờ này. Vui lòng chọn giờ hoặc chuyên viên khác.', 'BOOKING_CONFLICT');
   }
-  const roomNumber = await allocateRoom({ date, startTime, endTime, excludeId, roomCount: settings.roomCount });
+  const roomNumber = await allocateRoom({ date, startTime, durationMinutes, excludeId, roomCount: settings.roomCount });
   const variant = service.variants?.find((item) => Number(item.duration) === durationMinutes);
   return { service, staff, duration: durationMinutes, startTime, endTime, roomNumber, originalPrice: Number(variant?.price ?? service.price) };
 }
@@ -838,7 +843,7 @@ async function createBookingForActor(body, actor) {
     if (promo) { const updatedPromo = { ...promo, usedCount: Number(promo.usedCount || 0) + 1 }; await saveRecord('promotions', updatedPromo); await nextVersion('promotions'); }
     await nextVersion('bookings');
     await withAudit(actor, 'booking.created', booking.id, { status: booking.status });
-  });
+  }, { advisoryLock: { namespace: 'booking-date', key: body.date } });
   await backupIfDue();
   return { booking, status: 201 };
 }

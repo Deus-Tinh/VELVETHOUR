@@ -15,7 +15,7 @@ class AsyncMutex {
   }
 }
 
-function toPostgresSql(sql) {
+export function toPostgresSql(sql) {
   let result = '';
   let parameter = 0;
   let quote = null;
@@ -55,8 +55,7 @@ function toPostgresSql(sql) {
     const body = semicolon ? result.trimEnd().slice(0, -1) : result;
     result = `${body} ON CONFLICT DO NOTHING${semicolon ? ';' : ''}`;
   }
-  result = result.replace(/\bORDER\s+BY\s+rowid\b/gi, 'ORDER BY inserted_order');
-  result = result.replace(/\bORDER\s+BY\s+rowid\s+DESC\b/gi, 'ORDER BY inserted_order DESC');
+  result = result.replace(/\bORDER\s+BY\s+rowid(\s+DESC)?\b/gi, (_match, direction = '') => `ORDER BY inserted_order${direction}`);
   return result;
 }
 
@@ -88,7 +87,7 @@ class AsyncSqliteDatabase {
 
   exec(sql) { return this.#operation(() => this.raw.exec(sql)); }
 
-  async transaction(work) {
+  async transaction(work, _options = {}) {
     if (this.#local.getStore() === this) {
       const savepoint = `serenity_sp_${++this.#savepoint}`;
       this.raw.exec(`SAVEPOINT ${savepoint}`);
@@ -153,7 +152,7 @@ class AsyncPostgresDatabase {
 
   async exec(sql) { await this.#query(sql); }
 
-  async transaction(work) {
+  async transaction(work, { advisoryLock } = {}) {
     const active = this.#local.getStore();
     if (active) {
       const savepoint = `serenity_sp_${++this.#savepoint}`;
@@ -171,6 +170,11 @@ class AsyncPostgresDatabase {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
+      if (advisoryLock) {
+        const namespace = String(advisoryLock.namespace || 'serenity');
+        const key = String(advisoryLock.key || '');
+        await client.query('SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))', [namespace, key]);
+      }
       const result = await this.#local.run(client, work);
       await client.query('COMMIT');
       return result;
