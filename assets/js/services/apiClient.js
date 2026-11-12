@@ -199,7 +199,8 @@ function rememberBooking(booking) {
   if (!booking?.id) return;
   occupiedSlots = occupiedSlots.filter((item) => item.id !== booking.id);
   if (['Pending', 'Confirmed', 'CheckedIn'].includes(booking.status)) {
-    occupiedSlots.push({ id: booking.id, staffId: booking.staffId, roomNumber: booking.roomNumber, date: booking.date, startTime: booking.startTime, endTime: booking.endTime, status: booking.status });
+    occupiedSlots.push({ id: booking.id, staffId: booking.staffId, roomNumber: booking.roomNumber, date: booking.date,
+      startTime: booking.startTime, endTime: booking.endTime, duration: booking.duration, status: booking.status });
   }
 }
 

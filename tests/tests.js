@@ -632,6 +632,19 @@ export async function runAllTests() {
     } finally { authService.logout(); }
   });
 
+  await test('90-minute booking duration blocks slots even when a legacy end time is short', async () => {
+    const id = 'TEST_90_MINUTE_OCCUPANCY';
+    const date = addDays(todayStr(), 41);
+    bookingRepo.create({ id, code: id, serviceId: 'signature-body', serviceName: 'Signature Body Massage',
+      duration: 90, staffId: 'st-01', staffName: 'TEST Staff', date, startTime: '17:00', endTime: '18:00',
+      status: 'Confirmed', roomNumber: null });
+    try {
+      const slots = bookingService.getAvailableSlots(date, 'st-01', 30);
+      expect(slots.find((slot) => slot.time === '18:00')?.available).toBe(false);
+      expect(slots.find((slot) => slot.time === '18:30')?.available).toBe(true);
+    } finally { bookingRepo.remove(id); }
+  });
+
   await test('45. Booking accepts the exact 30-minute lead and rejects closed/too-far dates', async () => {
     assertOfflineBookingRequiresServer({ serviceId: 'signature-body', duration: 60, staffId: 'st-01', date: todayStr(),
       startTime: '10:30', customerName: 'TEST_Lead', customerPhone: '0911111124' });

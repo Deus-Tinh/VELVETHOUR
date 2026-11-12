@@ -1058,7 +1058,7 @@ async function collectionSnapshot(actor) {
     currentUser: actor,
     versions: Object.fromEntries(await Promise.all([...ADMIN_COLLECTIONS, 'holidaySales', 'siteContent'].map(async (name) => [name, await versionOf(name)]))),
     occupiedSlots: records.filter((row) => bookingOccupiesSlot(row) && row.date >= now.date)
-      .map(({ id, staffId, roomNumber, date, startTime, endTime, status }) => ({ id, staffId, roomNumber, date, startTime, endTime, status })),
+      .map(({ id, staffId, roomNumber, date, startTime, endTime, duration, status }) => ({ id, staffId, roomNumber, date, startTime, endTime, duration, status })),
   };
 }
 
