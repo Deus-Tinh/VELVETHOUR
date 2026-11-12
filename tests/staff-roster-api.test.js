@@ -88,7 +88,10 @@ test('server staff roster API is admin-only, atomic, versioned, and upserts with
     const afterRead = (await request('GET', '/api/admin/collections/staff', undefined, admin.cookie)).payload;
     const afterById = new Map(afterRead.records.map((row) => [row.id, row]));
     assert.ok(afterById.has(id));
-    for (const existing of before.records) assert.ok(afterById.has(existing.id), 'destination staff ' + existing.id + ' was deleted');
+    for (const existing of before.records) {
+      assert.ok(afterById.has(existing.id), 'destination staff ' + existing.id + ' was deleted');
+      assert.deepEqual(afterById.get(existing.id), existing, 'destination staff ' + existing.id + ' was modified');
+    }
     assert.deepEqual(allRows('users'), usersBefore);
     assert.deepEqual(allRows('bookings'), bookingsBefore);
     assert.deepEqual(db.prepare('SELECT * FROM staff_invites ORDER BY staff_id').all(), invitesBefore);

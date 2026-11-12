@@ -5,7 +5,7 @@ import {
   STAFF_ROSTER_MAX_RECORDS, STAFF_COLLECTION_MAX_RECORDS,
   StaffRosterError, buildStaffRosterExport, parseStaffRosterFile,
   planStaffRosterImport, applyStaffRosterPlan, staffRosterPlanSignature,
-  staffRosterRecordMatches,
+  staffRosterRecordMatches, staffRosterRecordSnapshotMatches,
 } from '../assets/js/domain/staffRosterModel.js';
 
 const categoryIds = new Set(['body-massages']);
@@ -179,16 +179,24 @@ test('preview signature detects same-timestamp content changes and destination-o
   ), 'object order and row order must not change a stable signature');
 });
 
+test('preserved snapshot comparison includes every field and timestamp while ignoring object key order', () => {
+  const before = staff('preserved', { imageUrl: '/staff/photo.webp' });
+  assert.equal(staffRosterRecordSnapshotMatches(before, Object.fromEntries(Object.entries(before).reverse())), true);
+  assert.equal(staffRosterRecordSnapshotMatches(before, { ...before, updatedAt: '2026-11-12T01:00:00.000Z' }), false);
+  assert.equal(staffRosterRecordSnapshotMatches(before, { ...before, imageUrl: '/staff/changed.webp' }), false);
+});
+
 test('image warnings distinguish embedded images from unverified URLs and paths', () => {
-  const embeddedPng = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jN9sAAAAASUVORK5CYII=';
+  const embeddedPng = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==';
   const parsed = parse([
     staff('embedded', { imageUrl: embeddedPng }),
     staff('relative', { imageUrl: '/uploads/staff/photo.webp' }),
     staff('external', { imageUrl: 'https://source.example/photo.webp' }),
     staff('fake-data', { imageUrl: 'data:image/png;base64,YQ==' }),
+    staff('truncated-png', { imageUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB' }),
   ]);
   assert.equal(parsed.valid.length, 3);
-  assert.equal(parsed.invalid.length, 1);
+  assert.equal(parsed.invalid.length, 2);
   assert.equal(parsed.valid[0].warnings.some((warning) => /chưa được kiểm tra/.test(warning)), false);
   assert.equal(parsed.valid[1].warnings.some((warning) => /site đích/.test(warning)), true);
   assert.equal(parsed.valid[2].warnings.some((warning) => /site đích/.test(warning)), true);

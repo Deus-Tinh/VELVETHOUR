@@ -20,6 +20,8 @@ export const STAFF_ROSTER_MAX_RECORDS = 200;
 export const STAFF_COLLECTION_MAX_RECORDS = 1000;
 const MAX_IMAGE_DATA_URL_CHARS = 600 * 1024;
 const MAX_URL_CHARS = 2048;
+const MAX_IMAGE_DIMENSION = 8192;
+const MAX_IMAGE_PIXELS = 16_777_216;
 
 /** Các trường nhân viên được phép chuyển; mọi trường khác bị từ chối để tránh lẫn dữ liệu tài khoản. */
 export const STAFF_ROSTER_FIELDS = Object.freeze([
@@ -104,6 +106,55 @@ function isIsoTimestamp(value) {
   return typeof value === 'string' && value.length <= 40 && Number.isFinite(Date.parse(value));
 }
 
+const PNG_CRC_TABLE = Uint32Array.from({ length: 256 }, (_, value) => {
+  let crc = value;
+  for (let bit = 0; bit < 8; bit += 1) crc = (crc & 1) ? (0xedb88320 ^ (crc >>> 1)) : (crc >>> 1);
+  return crc >>> 0;
+});
+
+function pngCrc32(bytes, start, end) {
+  let crc = 0xffffffff;
+  for (let index = start; index < end; index += 1) {
+    crc = PNG_CRC_TABLE[(crc ^ bytes[index]) & 0xff] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function validPng(bytes) {
+  const signature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  if (bytes.length < 45 || signature.some((byte, index) => bytes[index] !== byte)) return false;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let offset = 8;
+  let hasHeader = false;
+  let hasImageData = false;
+  let hasEnd = false;
+  while (offset + 12 <= bytes.length) {
+    const length = view.getUint32(offset, false);
+    const dataStart = offset + 8;
+    const dataEnd = dataStart + length;
+    const chunkEnd = dataEnd + 4;
+    if (chunkEnd > bytes.length) return false;
+    const type = String.fromCharCode(bytes[offset + 4], bytes[offset + 5], bytes[offset + 6], bytes[offset + 7]);
+    if (!hasHeader) {
+      if (type !== 'IHDR' || length !== 13) return false;
+      const width = view.getUint32(dataStart, false);
+      const height = view.getUint32(dataStart + 4, false);
+      if (!width || !height || width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION
+          || width * height > MAX_IMAGE_PIXELS) return false;
+      hasHeader = true;
+    } else if (type === 'IHDR') return false;
+    if (view.getUint32(dataEnd, false) !== pngCrc32(bytes, offset + 4, dataEnd)) return false;
+    if (type === 'IDAT') hasImageData = true;
+    if (type === 'IEND') {
+      if (length !== 0 || !hasImageData || chunkEnd !== bytes.length) return false;
+      hasEnd = true;
+      break;
+    }
+    offset = chunkEnd;
+  }
+  return hasHeader && hasImageData && hasEnd;
+}
+
 function classifyImageUrl(value) {
   if (value === null) return { ok: true, kind: 'cleared' };
   if (typeof value !== 'string' || !value) return { ok: false };
@@ -113,12 +164,9 @@ function classifyImageUrl(value) {
     let bytes;
     try { bytes = Uint8Array.from(atob(match[2]), (character) => character.charCodeAt(0)); }
     catch { return { ok: false }; }
-    const ascii = (start, end) => String.fromCharCode(...bytes.slice(start, end));
     let signatureMatches = false;
-    if (match[1].toLowerCase() === 'png' && bytes.length >= 24) {
-      const header = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-      signatureMatches = ascii(0, 8) === '\x89PNG\r\n\x1a\n'
-        && ascii(12, 16) === 'IHDR' && header.getUint32(16, false) > 0 && header.getUint32(20, false) > 0;
+    if (match[1].toLowerCase() === 'png') {
+      signatureMatches = validPng(bytes);
     } else if (match[1].toLowerCase() === 'jpeg' && bytes.length >= 4) {
       signatureMatches = bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
         && bytes[bytes.length - 2] === 0xff && bytes[bytes.length - 1] === 0xd9;
@@ -326,6 +374,11 @@ function stableValue(value) {
     return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stableValue(value[key])]));
   }
   return value;
+}
+
+/** Compare complete stored snapshots, including timestamps and optional fields. */
+export function staffRosterRecordSnapshotMatches(a, b) {
+  return Boolean(a && b && JSON.stringify(stableValue(a)) === JSON.stringify(stableValue(b)));
 }
 
 /** Chữ ký của toàn bộ hồ sơ ở site đích và dữ liệu nhập để phát hiện preview cũ. */

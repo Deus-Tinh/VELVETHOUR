@@ -120,7 +120,7 @@ export const staffService = {
       createdIds, updatedIds, records,
       skippedUpdates: overwriteMatching ? 0 : plan.updates.length,
       unchanged: plan.unchanged.length, preserved: plan.preserved.length,
-      preservedIds: plan.preserved.map((staff) => staff.id),
+      preservedRecords: structuredClone(plan.preserved),
       expectedVersion, wrote: records.length > 0,
     };
   },

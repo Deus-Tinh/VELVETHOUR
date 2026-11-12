@@ -27,7 +27,10 @@ import { showToast, showConfirmModal, openChangePasswordModal } from '../ui/comp
 import { getImageById, getServiceImage } from '../imageManifest.js';
 import { bookingMessage, customerChannelLinks, rebookingMessage } from '../services/customerMessaging.js';
 import { THERAPY_GROUPS, getTherapyGroupName } from '../domain/therapyGroupModel.js';
-import { STAFF_ROSTER_MAX_FILE_BYTES, staffRosterRecordMatches } from '../domain/staffRosterModel.js';
+import {
+  STAFF_ROSTER_MAX_FILE_BYTES, staffRosterRecordMatches,
+  staffRosterRecordSnapshotMatches,
+} from '../domain/staffRosterModel.js';
 import { renderAdminAgent } from './adminAgentPage.js';
 import { renderAdminHolidaySales } from './adminHolidaySalesPage.js';
 
@@ -1819,6 +1822,32 @@ function downloadStaffRoster() {
   return payload.count;
 }
 
+async function invalidEmbeddedRosterImages(plan) {
+  const rows = [...plan.creates, ...plan.updates, ...plan.unchanged];
+  const invalid = [];
+  for (const item of rows) {
+    const imageUrl = item.record.imageUrl;
+    if (typeof imageUrl !== 'string' || !imageUrl.startsWith('data:')) continue;
+    let bitmap;
+    try {
+      const response = await fetch(imageUrl);
+      if (!response.ok) throw new Error('Không đọc được ảnh nhúng.');
+      bitmap = await createImageBitmap(await response.blob());
+      if (bitmap.width > 8192 || bitmap.height > 8192 || bitmap.width * bitmap.height > 16777216) {
+        throw new Error('Ảnh nhúng vượt giới hạn kích thước giải mã.');
+      }
+    } catch {
+      invalid.push({
+        index: item.index, id: item.record.id, name: item.record.name,
+        errors: ['Ảnh nhúng không giải mã được hoặc vượt giới hạn kích thước; không thể nhập hồ sơ này.'],
+      });
+    } finally {
+      bitmap?.close?.();
+    }
+  }
+  return invalid;
+}
+
 function openStaffRosterImportModal(container) {
   const modal = document.getElementById('staffModal');
   const body = document.getElementById('staffModalBody');
@@ -1951,7 +1980,9 @@ function openStaffRosterImportModal(container) {
   const finishImport = async (serverSnapshot, confirmedVersion) => {
     const savedById = new Map(serverSnapshot.records.map((record) => [record.id, record]));
     const verifiedRecords = importResult.records.every((record) => staffRosterRecordMatches(savedById.get(record.id), record));
-    const preservedRecordsRemain = importResult.preservedIds.every((id) => savedById.has(id));
+    const preservedRecordsRemain = importResult.preservedRecords.every((record) => (
+      staffRosterRecordSnapshotMatches(savedById.get(record.id), record)
+    ));
     const verified = serverSnapshot.version >= confirmedVersion && verifiedRecords && preservedRecordsRemain;
     mode = 'done';
     if (fileInput) fileInput.disabled = true;
@@ -1984,7 +2015,10 @@ function openStaffRosterImportModal(container) {
         const alreadySaved = importResult.records.every((record) => staffRosterRecordMatches(
           serverBefore.records.find((saved) => saved.id === record.id), record,
         ));
-        const preservedRemain = importResult.preservedIds.every((id) => serverBefore.records.some((saved) => saved.id === id));
+        const serverById = new Map(serverBefore.records.map((record) => [record.id, record]));
+        const preservedRemain = importResult.preservedRecords.every((record) => (
+          staffRosterRecordSnapshotMatches(serverById.get(record.id), record)
+        ));
         if (alreadySaved && preservedRemain) {
           await finishImport(serverBefore, serverBefore.version);
         } else {
@@ -2038,6 +2072,7 @@ function openStaffRosterImportModal(container) {
       return;
     }
     busy = true;
+    fileInput.disabled = true;
     updateApplyButton();
     try {
       if (!apiClient.canSyncAdminCollections()) throw new Error('Cần kết nối máy chủ và phiên đăng nhập quản trị còn hiệu lực để nhập. Hãy tải lại trang rồi thử lại.');
@@ -2048,6 +2083,9 @@ function openStaffRosterImportModal(container) {
       const server = await apiClient.getServerStaffRoster();
       preview = staffService.previewRosterImport(text, { currentStaff: server.records, version: server.version });
       fileText = text;
+      setStatus('Đang xác minh ảnh nhúng trong tệp…');
+      preview.plan.invalid.push(...await invalidEmbeddedRosterImages(preview.plan));
+      preview.plan.invalid.sort((left, right) => left.index - right.index);
       setStatus(preview.plan.invalid.length
         ? `Tệp có ${preview.plan.invalid.length} dòng lỗi — không thể nhập.`
         : `Đã đọc ${preview.plan.total} chuyên viên. Kiểm tra bản xem trước — chưa có thay đổi nào được ghi.`,
@@ -2060,6 +2098,7 @@ function openStaffRosterImportModal(container) {
       setStatus(error.message || 'Không đọc được tệp.', 'error');
     } finally {
       busy = false;
+      if (mode === 'preview') fileInput.disabled = false;
       updateApplyButton();
     }
   });
@@ -2069,6 +2108,7 @@ function openStaffRosterImportModal(container) {
     if (mode === 'retry') { await syncImported(); return; }
     if (!preview || mode !== 'preview') return;
     busy = true;
+    fileInput.disabled = true;
     updateApplyButton();
     setStatus('Đang kiểm tra lại dữ liệu server so với bản xem trước…');
     try {
@@ -2090,6 +2130,7 @@ function openStaffRosterImportModal(container) {
       return;
     } finally {
       busy = false;
+      if (mode === 'preview') fileInput.disabled = false;
       updateApplyButton();
     }
     if (!importResult.wrote) {
