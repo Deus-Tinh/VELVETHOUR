@@ -31,7 +31,9 @@ export function drawRevenueChart(canvasId, dailyStats = []) {
     return;
   }
 
-  const maxRev = Math.max(...dailyStats.map((d) => d.revenue), 1000000);
+  const maxRev = Math.max(...dailyStats.map((d) => Number(d.revenue) || 0), 1000000);
+  const minRev = Math.min(0, ...dailyStats.map((d) => Number(d.revenue) || 0));
+  const revenueRange = Math.max(1, maxRev - minRev);
   const chartW = w - padLeft - padRight;
   const chartH = h - padTop - padBottom;
 
@@ -41,7 +43,7 @@ export function drawRevenueChart(canvasId, dailyStats = []) {
   const gridLines = 4;
   for (let i = 0; i <= gridLines; i++) {
     const y = padTop + (chartH / gridLines) * i;
-    const val = maxRev - (maxRev / gridLines) * i;
+    const val = maxRev - (revenueRange / gridLines) * i;
     ctx.beginPath();
     ctx.moveTo(padLeft, y);
     ctx.lineTo(w - padRight, y);
@@ -56,7 +58,7 @@ export function drawRevenueChart(canvasId, dailyStats = []) {
   // Tọa độ các điểm
   const points = dailyStats.map((d, idx) => {
     const x = padLeft + (chartW / (dailyStats.length - 1 || 1)) * idx;
-    const y = padTop + chartH - (d.revenue / maxRev) * chartH;
+    const y = padTop + ((maxRev - Number(d.revenue || 0)) / revenueRange) * chartH;
     return { x, y, ...d };
   });
 
@@ -66,9 +68,10 @@ export function drawRevenueChart(canvasId, dailyStats = []) {
   grad.addColorStop(1, 'rgba(102, 204, 112, 0.0)');
 
   ctx.beginPath();
-  ctx.moveTo(points[0].x, h - padBottom);
+  const zeroY = padTop + (maxRev / revenueRange) * chartH;
+  ctx.moveTo(points[0].x, zeroY);
   points.forEach((p) => ctx.lineTo(p.x, p.y));
-  ctx.lineTo(points[points.length - 1].x, h - padBottom);
+  ctx.lineTo(points[points.length - 1].x, zeroY);
   ctx.closePath();
   ctx.fillStyle = grad;
   ctx.fill();

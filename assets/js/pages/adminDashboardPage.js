@@ -29,6 +29,7 @@ import { bookingMessage, customerChannelLinks, rebookingMessage } from '../servi
 import { THERAPY_GROUPS, getTherapyGroupName } from '../domain/therapyGroupModel.js';
 import { renderAdminAgent } from './adminAgentPage.js';
 import { renderAdminHolidaySales } from './adminHolidaySalesPage.js';
+import { renderAdminMonthlyAnalytics } from './adminMonthlyAnalyticsPage.js';
 
 let adminActiveTab = 'overview'; // 'overview' | 'bookings' | 'agent' | 'services' | 'packages' | 'categories' | 'staff' | 'finance' | 'reconciliation' | 'customers' | 'promotions' | 'contacts' | 'settings'
 let activePackagePreviewCleanup = null;
@@ -96,6 +97,7 @@ export function renderAdminDashboardPage() {
       <!-- Navigation Tabs -->
       <div class="dash-tabs-bar">
         <button type="button" class="dash-tab-btn ${adminActiveTab === 'overview' ? 'active' : ''}" data-tab="overview">📊 Tổng Quan</button>
+        <button type="button" class="dash-tab-btn ${adminActiveTab === 'monthly' ? 'active' : ''}" data-tab="monthly">📈 Báo Cáo Tháng</button>
         <button type="button" class="dash-tab-btn ${adminActiveTab === 'bookings' ? 'active' : ''}" data-tab="bookings">📅 Lịch Hẹn</button>
         <button type="button" class="dash-tab-btn ${adminActiveTab === 'agent' ? 'active' : ''}" data-tab="agent">✿ Agent Spa</button>
         <button type="button" class="dash-tab-btn ${adminActiveTab === 'finance' ? 'active' : ''}" data-tab="finance">💰 Thu Chi</button>
@@ -174,6 +176,7 @@ function renderAdminCurrentTab(kpis) {
   if (!container) return;
 
   if (adminActiveTab === 'overview') renderTabOverview(container, kpis);
+  else if (adminActiveTab === 'monthly') renderAdminMonthlyAnalytics(container);
   else if (adminActiveTab === 'bookings') renderTabBookings(container);
   else if (adminActiveTab === 'agent') renderAdminAgent(container);
   else if (adminActiveTab === 'finance') renderTabFinance(container);
