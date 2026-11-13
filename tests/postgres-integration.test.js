@@ -27,6 +27,7 @@ let dataDirectory;
 let customerCookie;
 let adminCookie;
 let persistentBookingId;
+let persistentRosterId;
 
 function assertIsolatedTestDatabase(raw) {
   assert.ok(raw, 'PG_TEST_DATABASE_URL must point to a disposable PostgreSQL test database.');
@@ -119,10 +120,11 @@ async function stopServer() {
   serverProcess = undefined;
 }
 
-async function request(method, endpoint, body, cookie = '') {
+async function request(method, endpoint, body, cookie = '', extraHeaders = {}) {
   const headers = new Headers({ origin });
   if (body !== undefined) headers.set('content-type', 'application/json');
   if (cookie) headers.set('cookie', cookie);
+  for (const [name, value] of Object.entries(extraHeaders)) headers.set(name, String(value));
   const response = await fetch(new URL(endpoint, origin), {
     method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
@@ -360,8 +362,64 @@ test('PostgreSQL API enforces 30/60/90/120-minute occupancy, adjacent slots, roo
   assert.ok(adminBookings.payload.bookings.some((booking) => booking.id === persistentBookingId), 'admin booking list must read data persisted in PostgreSQL');
 });
 
-test('bookings, sessions, and migration state survive a PostgreSQL server restart', async () => {
+test('PostgreSQL staff roster imports preserve unrelated data and reject concurrent stale collection writes', async () => {
+  const before = await request('GET', '/api/admin/collections/staff', undefined, adminCookie);
+  assert.equal(before.status, 200);
+  const deniedGuest = await request('PUT', '/api/admin/staff-roster', { records: [] }, '',
+    { 'If-Match': String(before.payload.version) });
+  const deniedCustomer = await request('PUT', '/api/admin/staff-roster', { records: [] }, customerCookie,
+    { 'If-Match': String(before.payload.version) });
+  assert.equal(deniedGuest.status, 401);
+  assert.equal(deniedCustomer.status, 403);
+  const originalStaff = before.payload.records;
+  const original = originalStaff.find((row) => row.id === 'st-01');
+  assert.ok(original, 'PostgreSQL test seed should include staff st-01');
+  persistentRosterId = `pg-roster-${randomUUID().replaceAll('-', '').slice(0, 16)}`;
+  const imported = {
+    id: persistentRosterId, name: 'Chuyên viên PostgreSQL', title: 'Chuyên viên kiểm thử',
+    specialties: [original.specialties[0]], workingDays: [1, 2, 3, 4, 5],
+    shiftStart: '09:00', shiftEnd: '18:00', daysOff: [], active: true,
+  };
+  const usersBefore = await appPool.query("SELECT id,payload FROM collection_records WHERE collection='users' ORDER BY id");
+  const bookingsBefore = await appPool.query("SELECT id,payload FROM collection_records WHERE collection='bookings' ORDER BY id");
+
+  const write = await request('PUT', '/api/admin/staff-roster', { records: [imported] }, adminCookie,
+    { 'If-Match': String(before.payload.version) });
+  assert.equal(write.status, 200, JSON.stringify(write.payload));
+  assert.equal(write.payload.version, before.payload.version + 1);
+  const afterImport = await request('GET', '/api/admin/collections/staff', undefined, adminCookie);
+  assert.equal(afterImport.status, 200);
+  const importedRows = new Map(afterImport.payload.records.map((row) => [row.id, row]));
+  assert.deepEqual(importedRows.get(persistentRosterId).name, imported.name);
+  for (const destinationRow of originalStaff) {
+    assert.deepEqual(importedRows.get(destinationRow.id), destinationRow, `destination staff ${destinationRow.id} must be preserved`);
+  }
+  assert.deepEqual((await appPool.query("SELECT id,payload FROM collection_records WHERE collection='users' ORDER BY id")).rows, usersBefore.rows);
+  assert.deepEqual((await appPool.query("SELECT id,payload FROM collection_records WHERE collection='bookings' ORDER BY id")).rows, bookingsBefore.rows);
+
+  const concurrentVersion = afterImport.payload.version;
+  const rosterUpdate = { ...importedRows.get('st-01'), name: 'Roster admin update' };
+  const collectionRows = afterImport.payload.records.map((row) => row.id === 'st-01'
+    ? { ...row, name: 'Collection admin update' }
+    : row);
+  const competing = await Promise.all([
+    request('PUT', '/api/admin/staff-roster', { records: [rosterUpdate] }, adminCookie,
+      { 'If-Match': String(concurrentVersion) }),
+    request('PUT', '/api/admin/collections/staff', { records: collectionRows }, adminCookie,
+      { 'If-Match': String(concurrentVersion) }),
+  ]);
+  assert.deepEqual(competing.map((item) => item.status).sort(), [200, 409], 'only one stale-snapshot writer may commit');
+  const final = await request('GET', '/api/admin/collections/staff', undefined, adminCookie);
+  assert.equal(final.status, 200);
+  assert.equal(final.payload.records.filter((row) => row.id === persistentRosterId).length, 1);
+  assert.equal(final.payload.records.length, originalStaff.length + 1, 'a stale full collection write must not delete the prior import');
+  const finalOriginal = final.payload.records.find((row) => row.id === 'st-01');
+  assert.ok(['Roster admin update', 'Collection admin update'].includes(finalOriginal.name));
+});
+
+test('bookings, staff roster, sessions, and migration state survive a PostgreSQL server restart', async () => {
   assert.ok(persistentBookingId);
+  assert.ok(persistentRosterId);
   await stopServer();
   await startServer();
   const health = await fetch(`${origin}/api/ready`).then((response) => response.json());
@@ -371,4 +429,7 @@ test('bookings, sessions, and migration state survive a PostgreSQL server restar
   const restored = bookings.payload.bookings.find((booking) => booking.id === persistentBookingId);
   assert.equal(restored.duration, 90);
   assert.equal(restored.endTime, '18:30');
+  const roster = await request('GET', '/api/admin/collections/staff', undefined, adminCookie);
+  assert.equal(roster.status, 200);
+  assert.equal(roster.payload.records.filter((row) => row.id === persistentRosterId).length, 1);
 });

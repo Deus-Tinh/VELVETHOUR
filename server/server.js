@@ -36,6 +36,10 @@ import { buildMusicManifest } from './musicLibrary.js';
 import { assertPersistentSQLiteStorage } from './persistentStorage.js';
 import { assertSqliteIntegrity, createSqliteBackup } from './sqliteMaintenance.js';
 import { openAsyncDatabase, wrapSqliteDatabase } from './asyncDatabase.js';
+import {
+  STAFF_COLLECTION_MAX_RECORDS, STAFF_ROSTER_MAX_COLLECTION_BYTES, STAFF_ROSTER_MAX_RECORDS,
+  validateStaffRosterRow,
+} from '../assets/js/domain/staffRosterModel.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 if (!process.env.NODE_TEST_CONTEXT && typeof process.loadEnvFile === 'function') {
@@ -2941,23 +2945,94 @@ async function routeApi(request, response, url) {
     return respond(response, 201, { booking: updated, payment: entry });
   }
 
+  if (method === 'GET' && pathname === '/api/admin/collections/staff') {
+    assertOrigin(request);
+    await requireActor(request, ['admin']);
+    return respond(response, 200, { version: await versionOf('staff'), records: await parseRows('staff') });
+  }
+
+  if (method === 'PUT' && pathname === '/api/admin/staff-roster') {
+    assertOrigin(request);
+    const actor = await requireActor(request, ['admin']);
+    const body = await readBody(request, 8 * 1024 * 1024);
+    if (!body || typeof body !== 'object' || Array.isArray(body)
+        || Object.keys(body).some((key) => key !== 'records')
+        || !Array.isArray(body.records) || body.records.length > STAFF_ROSTER_MAX_RECORDS) {
+      throw new HttpError(400, `Yêu cầu không hợp lệ hoặc vượt quá ${STAFF_ROSTER_MAX_RECORDS} hồ sơ mỗi lần nhập.`, 'VALIDATION');
+    }
+    const expected = Number(request.headers['if-match']);
+    const ids = new Set();
+    if (body.records.some((record) => {
+      if (!record || typeof record !== 'object' || Array.isArray(record) || ids.has(record.id)) return true;
+      ids.add(record.id);
+      return false;
+    })) throw new HttpError(400, 'Danh sách hồ sơ có ID trùng hoặc sai định dạng.', 'VALIDATION');
+
+    let version;
+    await transaction(async () => {
+      const currentVersion = await versionOf('staff');
+      if (!Number.isInteger(expected) || expected !== currentVersion) {
+        throw new HttpError(409, 'Danh sách chuyên viên đã thay đổi trên máy chủ. Hãy tải lại và xem trước lần nữa.', 'VERSION_CONFLICT');
+      }
+      const categoryIds = new Set((await parseRows('categories')).map((category) => category.id));
+      const current = new Map((await parseRows('staff')).map((staff) => [staff.id, staff]));
+      const validated = body.records.map((row) => {
+        const result = validateStaffRosterRow(row, categoryIds);
+        if (!result.record || result.errors.length) {
+          throw new HttpError(400, `Hồ sơ ${String(row.id || '(không có ID)')}: ${result.errors.join(' ')}`, 'VALIDATION');
+        }
+        return result.record;
+      });
+      const now = new Date().toISOString();
+      const creates = [];
+      const updates = [];
+      const prepared = [];
+      const clearable = ['imageUrl', 'imageId', 'breaks', 'breakStart', 'breakEnd'];
+      for (const incoming of validated) {
+        const existing = current.get(incoming.id);
+        const next = existing
+          ? { ...existing, ...incoming, id: existing.id, createdAt: existing.createdAt || incoming.createdAt || now, updatedAt: now }
+          : { active: true, daysOff: [], ...incoming, createdAt: incoming.createdAt || now, updatedAt: now };
+        for (const field of clearable) if (incoming[field] === null) delete next[field];
+        current.set(next.id, next);
+        prepared.push(next);
+        if (existing) updates.push(next.id); else creates.push(next.id);
+      }
+      if (current.size > STAFF_COLLECTION_MAX_RECORDS) {
+        throw new HttpError(400, 'Sau khi nhập sẽ vượt quá ' + STAFF_COLLECTION_MAX_RECORDS + ' hồ sơ chuyên viên.', 'VALIDATION');
+      }
+      if (Buffer.byteLength(JSON.stringify({ records: [...current.values()] }), 'utf8') > STAFF_ROSTER_MAX_COLLECTION_BYTES) {
+        throw new HttpError(400, 'Dữ liệu roster sau khi nhập vượt giới hạn lưu trữ.', 'VALIDATION');
+      }
+      for (const record of prepared) await saveRecord('staff', record);
+      if (body.records.length) {
+        version = await nextVersion('staff');
+        await withAudit(actor, 'staff.roster.imported', null, { created: creates.length, updated: updates.length });
+      }
+    }, { advisoryLock: { namespace: 'collection', key: 'staff' } });
+    try { await backupIfDue(); }
+    catch (error) { console.error('[staff-roster] Backup after roster import failed:', error.message); }
+    return respond(response, 200, { version });
+  }
+
   if (method === 'PUT' && pathname.startsWith('/api/admin/collections/')) {
     assertOrigin(request);
     const actor = await requireActor(request, ['admin']);
     const collection = decodeURIComponent(pathname.slice('/api/admin/collections/'.length));
     if (!ADMIN_COLLECTIONS.has(collection)) throw new HttpError(404, 'Danh mục dữ liệu không được hỗ trợ.', 'NOT_FOUND');
     const body = await readBody(request, collection === 'staff' ? 8 * 1024 * 1024 : 1024 * 1024);
-    if (!Array.isArray(body.records) || body.records.length > 1000 || body.records.some((record) => !record || typeof record.id !== 'string')) throw new HttpError(400, 'Danh sách dữ liệu không hợp lệ.', 'VALIDATION');
+    if (!Array.isArray(body.records) || body.records.length > 1000 || body.records.some((record) => !record || typeof record.id !== 'string')
+        || new Set(body.records.map((record) => record.id)).size !== body.records.length) throw new HttpError(400, 'Danh sách dữ liệu không hợp lệ.', 'VALIDATION');
     const expected = Number(request.headers['if-match']);
-    const current = await versionOf(collection);
-    if (!Number.isInteger(expected) || expected !== current) throw new HttpError(409, 'Dữ liệu đã được thay đổi ở thiết bị khác. Vui lòng tải lại rồi thử lại.', 'VERSION_CONFLICT');
     if (collection === 'services') await validateServiceCollection(body.records);
     await transaction(async () => {
+      const current = await versionOf(collection);
+      if (!Number.isInteger(expected) || expected !== current) throw new HttpError(409, 'Dữ liệu đã được thay đổi ở thiết bị khác. Vui lòng tải lại rồi thử lại.', 'VERSION_CONFLICT');
       await q.deleteCollection.run(collection);
       for (const record of body.records) await q.insert.run(collection, record.id, JSON.stringify(record));
       const version = await nextVersion(collection);
       await withAudit(actor, `collection.${collection}.updated`, null, { count: body.records.length, version });
-    });
+    }, { advisoryLock: { namespace: 'collection', key: collection } });
     await backupIfDue();
     return respond(response, 200, { version: await versionOf(collection) });
   }
