@@ -35,6 +35,7 @@ import { isStrongPassword, schemas, validate } from '../assets/js/core/validator
 import { buildMusicManifest } from './musicLibrary.js';
 import { assertPersistentSQLiteStorage } from './persistentStorage.js';
 import { assertSqliteIntegrity, createSqliteBackup } from './sqliteMaintenance.js';
+import { aggregateMonthlyAnalytics, businessYearMonth } from './monthlyAnalytics.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 if (!process.env.NODE_TEST_CONTEXT && typeof process.loadEnvFile === 'function') {
@@ -2334,6 +2335,28 @@ async function routeApi(request, response, url) {
   }
   if (method === 'GET' && pathname === '/api/bootstrap') return respond(response, 200, collectionSnapshot(actorFrom(request)));
   if (method === 'GET' && pathname === '/api/auth/session') return respond(response, 200, { user: actorFrom(request) });
+
+  if (method === 'GET' && pathname === '/api/admin/analytics/monthly') {
+    requireActor(request, ['admin']);
+    const requestedYear = url.searchParams.get('year');
+    const requestedMonth = url.searchParams.get('month');
+    let year;
+    let month;
+    if (requestedYear === null && requestedMonth === null) {
+      ({ year, month } = businessYearMonth());
+    } else {
+      if (requestedYear === null || requestedMonth === null
+        || !/^\d{4}$/.test(requestedYear) || !/^\d{1,2}$/.test(requestedMonth)) {
+        throw new HttpError(400, 'Tháng hoặc năm không hợp lệ.', 'ANALYTICS_PERIOD_INVALID');
+      }
+      year = Number(requestedYear);
+      month = Number(requestedMonth);
+      if (year < 2000 || year > 2100 || month < 1 || month > 12) {
+        throw new HttpError(400, 'Tháng hoặc năm không hợp lệ.', 'ANALYTICS_PERIOD_INVALID');
+      }
+    }
+    return respond(response, 200, { analytics: aggregateMonthlyAnalytics({ bookings: parseRows('bookings'), year, month }) });
+  }
 
   if (method === 'GET' && pathname === '/api/admin/staff-invites') {
     requireActor(request, ['admin']);
