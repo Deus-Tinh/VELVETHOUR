@@ -155,6 +155,124 @@ function validPng(bytes) {
   return hasHeader && hasImageData && hasEnd;
 }
 
+function ascii(bytes, start, end) {
+  return String.fromCharCode(...bytes.subarray(start, end));
+}
+
+function dimensionsWithinLimit(width, height) {
+  return Number.isInteger(width) && Number.isInteger(height)
+    && width > 0 && height > 0
+    && width <= MAX_IMAGE_DIMENSION && height <= MAX_IMAGE_DIMENSION
+    && width * height <= MAX_IMAGE_PIXELS;
+}
+
+function isJpegStartOfFrame(marker) {
+  return marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker);
+}
+
+/** Check JPEG marker/segment structure and bound dimensions before image decoding. */
+function validJpeg(bytes) {
+  if (bytes.length < 16 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return false;
+  let offset = 2;
+  let hasFrame = false;
+  let hasScan = false;
+
+  while (offset < bytes.length) {
+    if (bytes[offset] !== 0xff) return false;
+    while (offset < bytes.length && bytes[offset] === 0xff) offset += 1;
+    if (offset >= bytes.length) return false;
+    const marker = bytes[offset];
+    offset += 1;
+
+    if (marker === 0xd9) return hasFrame && hasScan && offset === bytes.length;
+    if (marker === 0xd8 || marker === 0x00 || (marker >= 0xd0 && marker <= 0xd7)) return false;
+    if (marker === 0x01) continue;
+    if (offset + 2 > bytes.length) return false;
+
+    const segmentLength = (bytes[offset] << 8) | bytes[offset + 1];
+    if (segmentLength < 2 || offset + segmentLength > bytes.length) return false;
+    if (isJpegStartOfFrame(marker)) {
+      if (hasFrame || segmentLength < 8) return false;
+      const height = (bytes[offset + 3] << 8) | bytes[offset + 4];
+      const width = (bytes[offset + 5] << 8) | bytes[offset + 6];
+      const components = bytes[offset + 7];
+      if (!components || segmentLength !== 8 + components * 3 || !dimensionsWithinLimit(width, height)) return false;
+      hasFrame = true;
+    }
+
+    if (marker !== 0xda) {
+      offset += segmentLength;
+      continue;
+    }
+
+    const components = bytes[offset + 2];
+    if (!hasFrame || !components || segmentLength !== 6 + components * 2) return false;
+    hasScan = true;
+    offset += segmentLength;
+
+    // Scan entropy bytes until the next unstuffed marker. Restart markers and FF00
+    // are part of the scan; other markers are parsed by the outer loop.
+    while (offset < bytes.length) {
+      if (bytes[offset] !== 0xff) { offset += 1; continue; }
+      const markerStart = offset;
+      while (offset < bytes.length && bytes[offset] === 0xff) offset += 1;
+      if (offset >= bytes.length) return false;
+      const scanMarker = bytes[offset];
+      if (scanMarker === 0x00 || (scanMarker >= 0xd0 && scanMarker <= 0xd7)) {
+        offset += 1;
+        continue;
+      }
+      offset = markerStart;
+      break;
+    }
+  }
+  return false;
+}
+
+function validWebp(bytes) {
+  if (bytes.length < 20 || ascii(bytes, 0, 4) !== 'RIFF' || ascii(bytes, 8, 12) !== 'WEBP') return false;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (view.getUint32(4, true) !== bytes.length - 8) return false;
+  let offset = 12;
+  let hasImageData = false;
+  let dimensions = null;
+
+  while (offset < bytes.length) {
+    if (offset + 8 > bytes.length) return false;
+    const type = ascii(bytes, offset, offset + 4);
+    const length = view.getUint32(offset + 4, true);
+    const dataStart = offset + 8;
+    const dataEnd = dataStart + length;
+    const chunkEnd = dataEnd + (length % 2);
+    if (chunkEnd > bytes.length) return false;
+
+    if (type === 'VP8X') {
+      if (length !== 10) return false;
+      const width = 1 + bytes[dataStart + 4] + (bytes[dataStart + 5] << 8) + (bytes[dataStart + 6] << 16);
+      const height = 1 + bytes[dataStart + 7] + (bytes[dataStart + 8] << 8) + (bytes[dataStart + 9] << 16);
+      if (!dimensionsWithinLimit(width, height)) return false;
+      dimensions ||= { width, height };
+    } else if (type === 'VP8 ' && length >= 10) {
+      if (bytes[dataStart + 3] !== 0x9d || bytes[dataStart + 4] !== 0x01 || bytes[dataStart + 5] !== 0x2a) return false;
+      const width = ((bytes[dataStart + 6] | (bytes[dataStart + 7] << 8)) & 0x3fff);
+      const height = ((bytes[dataStart + 8] | (bytes[dataStart + 9] << 8)) & 0x3fff);
+      if (!dimensionsWithinLimit(width, height)) return false;
+      dimensions ||= { width, height };
+      hasImageData = true;
+    } else if (type === 'VP8L' && length >= 5) {
+      if (bytes[dataStart] !== 0x2f) return false;
+      const width = 1 + (((bytes[dataStart + 2] & 0x3f) << 8) | bytes[dataStart + 1]);
+      const height = 1 + (((bytes[dataStart + 4] & 0x0f) << 10) | (bytes[dataStart + 3] << 2) | ((bytes[dataStart + 2] & 0xc0) >> 6));
+      if (!dimensionsWithinLimit(width, height)) return false;
+      dimensions ||= { width, height };
+      hasImageData = true;
+    }
+
+    offset = chunkEnd;
+  }
+  return offset === bytes.length && hasImageData && Boolean(dimensions);
+}
+
 function classifyImageUrl(value) {
   if (value === null) return { ok: true, kind: 'cleared' };
   if (typeof value !== 'string' || !value) return { ok: false };
@@ -167,13 +285,10 @@ function classifyImageUrl(value) {
     let signatureMatches = false;
     if (match[1].toLowerCase() === 'png') {
       signatureMatches = validPng(bytes);
-    } else if (match[1].toLowerCase() === 'jpeg' && bytes.length >= 4) {
-      signatureMatches = bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
-        && bytes[bytes.length - 2] === 0xff && bytes[bytes.length - 1] === 0xd9;
-    } else if (match[1].toLowerCase() === 'webp' && bytes.length >= 12) {
-      const header = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-      signatureMatches = ascii(0, 4) === 'RIFF' && ascii(8, 12) === 'WEBP'
-        && header.getUint32(4, true) === bytes.length - 8;
+    } else if (match[1].toLowerCase() === 'jpeg') {
+      signatureMatches = validJpeg(bytes);
+    } else if (match[1].toLowerCase() === 'webp') {
+      signatureMatches = validWebp(bytes);
     }
     return { ok: signatureMatches, kind: 'embedded' };
   }
@@ -352,7 +467,10 @@ export function staffRosterRecordMatches(a, b) {
  */
 export function planStaffRosterImport(parsed, currentStaff) {
   const current = new Map((currentStaff || []).map((staff) => [staff.id, staff]));
-  const importedIds = new Set(parsed.valid.map((item) => item.record.id));
+  const importedIds = new Set([
+    ...parsed.valid.map((item) => item.record.id),
+    ...parsed.invalid.map((item) => item.id).filter(Boolean),
+  ]);
   const creates = [];
   const updates = [];
   const unchanged = [];
@@ -366,6 +484,19 @@ export function planStaffRosterImport(parsed, currentStaff) {
   const preserved = (currentStaff || []).filter((staff) => !importedIds.has(staff.id));
   return { creates, updates, unchanged, preserved, invalid: parsed.invalid, total: parsed.total,
     targetSnapshot: structuredClone(currentStaff || []) };
+}
+
+/** Attach browser decode failures and keep invalid rows out of actionable preview counts. */
+export function attachStaffRosterImageErrors(plan, invalidRows) {
+  if (!Array.isArray(invalidRows) || !invalidRows.length) return plan;
+  const invalidIndexes = new Set(invalidRows.map((row) => row.index));
+  const invalidIds = new Set(invalidRows.map((row) => row.id).filter(Boolean));
+  for (const action of ['creates', 'updates', 'unchanged']) {
+    plan[action] = plan[action].filter((item) => !invalidIndexes.has(item.index));
+  }
+  plan.preserved = plan.preserved.filter((record) => !invalidIds.has(record.id));
+  plan.invalid = [...plan.invalid, ...invalidRows].sort((left, right) => left.index - right.index);
+  return plan;
 }
 
 function stableValue(value) {

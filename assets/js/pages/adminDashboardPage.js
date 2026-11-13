@@ -28,7 +28,7 @@ import { getImageById, getServiceImage } from '../imageManifest.js';
 import { bookingMessage, customerChannelLinks, rebookingMessage } from '../services/customerMessaging.js';
 import { THERAPY_GROUPS, getTherapyGroupName } from '../domain/therapyGroupModel.js';
 import {
-  STAFF_ROSTER_MAX_FILE_BYTES, staffRosterRecordMatches,
+  STAFF_ROSTER_MAX_FILE_BYTES, attachStaffRosterImageErrors, staffRosterRecordMatches,
   staffRosterRecordSnapshotMatches,
 } from '../domain/staffRosterModel.js';
 import { renderAdminAgent } from './adminAgentPage.js';
@@ -2084,8 +2084,7 @@ function openStaffRosterImportModal(container) {
       preview = staffService.previewRosterImport(text, { currentStaff: server.records, version: server.version });
       fileText = text;
       setStatus('Đang xác minh ảnh nhúng trong tệp…');
-      preview.plan.invalid.push(...await invalidEmbeddedRosterImages(preview.plan));
-      preview.plan.invalid.sort((left, right) => left.index - right.index);
+      attachStaffRosterImageErrors(preview.plan, await invalidEmbeddedRosterImages(preview.plan));
       setStatus(preview.plan.invalid.length
         ? `Tệp có ${preview.plan.invalid.length} dòng lỗi — không thể nhập.`
         : `Đã đọc ${preview.plan.total} chuyên viên. Kiểm tra bản xem trước — chưa có thay đổi nào được ghi.`,

@@ -5,7 +5,7 @@ import {
   STAFF_ROSTER_MAX_RECORDS, STAFF_COLLECTION_MAX_RECORDS,
   StaffRosterError, buildStaffRosterExport, parseStaffRosterFile,
   planStaffRosterImport, applyStaffRosterPlan, staffRosterPlanSignature,
-  staffRosterRecordMatches, staffRosterRecordSnapshotMatches,
+  staffRosterRecordMatches, staffRosterRecordSnapshotMatches, attachStaffRosterImageErrors,
 } from '../assets/js/domain/staffRosterModel.js';
 
 const categoryIds = new Set(['body-massages']);
@@ -126,6 +126,15 @@ test('missing destination category makes the whole import invalid', () => {
   assert.match(parsed.invalid[0].errors.join(' '), /danh mục không tồn tại/);
 });
 
+test('invalid source rows are not mislabeled as destination-only records', () => {
+  const plan = planStaffRosterImport(
+    parse([staff('invalid-at-destination', { imageUrl: 'data:image/jpeg;base64,/9j/2Q==' })]),
+    [staff('invalid-at-destination'), staff('destination-only')],
+  );
+  assert.equal(plan.invalid.length, 1);
+  assert.deepEqual(plan.preserved.map((record) => record.id), ['destination-only']);
+});
+
 test('rejects malformed shifts, out-of-shift breaks, and overlapping breaks', () => {
   const invalidRows = [
     staff('bad-shift', { shiftStart: '18:00', shiftEnd: '09:00' }),
@@ -200,6 +209,35 @@ test('image warnings distinguish embedded images from unverified URLs and paths'
   assert.equal(parsed.valid[0].warnings.some((warning) => /chưa được kiểm tra/.test(warning)), false);
   assert.equal(parsed.valid[1].warnings.some((warning) => /site đích/.test(warning)), true);
   assert.equal(parsed.valid[2].warnings.some((warning) => /site đích/.test(warning)), true);
+});
+
+test('embedded WebP validates, malformed JPEG is rejected, and image failures leave preview counts accurate', () => {
+  const webp = 'data:image/webp;base64,UklGRiQAAABXRUJQVlA4IBgAAAAwAQCdASoBAAEAAUAmJaQAA3AA/vz0AAA=';
+  const jpeg = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAAA//EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AR//Z';
+  const parsedImages = parse([
+    staff('webp-image', { imageUrl: webp }),
+    staff('jpeg-image', { imageUrl: jpeg }),
+    staff('fake-jpeg', { imageUrl: 'data:image/jpeg;base64,/9j/2Q==' }),
+  ]);
+  assert.equal(parsedImages.valid.length, 2);
+  assert.equal(parsedImages.invalid.length, 1);
+  assert.match(parsedImages.invalid[0].errors.join(' '), /Ảnh/);
+
+  const parsed = parse([
+    staff('bad-image-update', { imageUrl: webp, name: 'Tên từ tệp' }),
+    staff('valid-create'),
+  ]);
+  const destination = [staff('bad-image-update', { name: 'Tên tại site' }), staff('destination-only')];
+  const plan = planStaffRosterImport(parsed, destination);
+  assert.equal(plan.updates.length, 1);
+  assert.equal(plan.creates.length, 1);
+  attachStaffRosterImageErrors(plan, [{
+    index: 0, id: 'bad-image-update', name: 'Tên từ tệp', errors: ['Ảnh nhúng không giải mã được.'],
+  }]);
+  assert.equal(plan.updates.length, 0);
+  assert.deepEqual(plan.creates.map((item) => item.record.id), ['valid-create']);
+  assert.deepEqual(plan.preserved.map((record) => record.id), ['destination-only']);
+  assert.equal(plan.invalid.length, 1);
 });
 
 test('retry of the same import plan does not create a duplicate staff ID', () => {

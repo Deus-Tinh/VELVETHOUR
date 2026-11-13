@@ -6,6 +6,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { DatabaseSync } from 'node:sqlite';
+import { assertSqliteIntegrity } from '../server/sqliteMaintenance.js';
 
 process.env.NODE_ENV = 'test';
 const directory = await mkdtemp(path.join(tmpdir(), 'serenity-staff-roster-'));
@@ -79,7 +80,9 @@ test('server staff roster API is admin-only, atomic, versioned, and upserts with
     const invitesBefore = db.prepare('SELECT * FROM staff_invites ORDER BY staff_id').all();
     const categoryId = allRows('categories')[0].id;
     const id = 'roster-' + randomUUID().replaceAll('-', '');
-    const imported = recordFor(id, categoryId);
+    const imported = recordFor(id, categoryId, {
+      imageUrl: 'data:image/webp;base64,UklGRiQAAABXRUJQVlA4IBgAAAAwAQCdASoBAAEAAUAmJaQAA3AA/vz0AAA=',
+    });
     const result = await request('PUT', '/api/admin/staff-roster', { records: [imported] }, admin.cookie,
       { 'If-Match': String(before.version) });
     assert.equal(result.status, 200, JSON.stringify(result.payload));
@@ -88,6 +91,7 @@ test('server staff roster API is admin-only, atomic, versioned, and upserts with
     const afterRead = (await request('GET', '/api/admin/collections/staff', undefined, admin.cookie)).payload;
     const afterById = new Map(afterRead.records.map((row) => [row.id, row]));
     assert.ok(afterById.has(id));
+    assert.equal(afterById.get(id).imageUrl, imported.imageUrl);
     for (const existing of before.records) {
       assert.ok(afterById.has(existing.id), 'destination staff ' + existing.id + ' was deleted');
       assert.deepEqual(afterById.get(existing.id), existing, 'destination staff ' + existing.id + ' was modified');
@@ -136,6 +140,7 @@ test('server staff roster API is admin-only, atomic, versioned, and upserts with
       { records: [recordFor('invalid-cat', 'not-a-category')] },
       { records: [recordFor('invalid-shift', categoryId, { shiftEnd: '08:00' })] },
       { records: [recordFor('invalid-break', categoryId, { breaks: [{ startTime: '08:00', endTime: '09:30' }] })] },
+      { records: [recordFor('invalid-jpeg', categoryId, { imageUrl: 'data:image/jpeg;base64,/9j/2Q==' })] },
       { records: [valid, valid] },
       { records: [recordFor('sensitive', categoryId, { passwordHash: 'must-not-persist' })] },
       { records: [valid], users: [{ id: 'should-not-be-accepted' }] },
@@ -168,4 +173,6 @@ test('server staff roster API is admin-only, atomic, versioned, and upserts with
       db.exec('DROP TRIGGER IF EXISTS fail_roster_insert');
     }
   });
+
+  assert.deepEqual(assertSqliteIntegrity(db), { integrity: 'ok', foreignKeyViolations: 0 });
 });
