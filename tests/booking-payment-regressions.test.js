@@ -152,6 +152,29 @@ test('12. Adjacent booking windows are accepted without a false overlap', async 
   assert.equal(adjacent.payload.booking.paymentStatus, 'awaiting_payment');
 });
 
+test('90-minute bookings retain their duration in the occupied-slot snapshot', async () => {
+  const date = futureDate(23);
+  const first = await createBooking(date, { duration: 90, staffId: 'st-03', startTime: '17:00' });
+  assert.equal(first.duration, 90);
+  assert.equal(first.endTime, '18:30');
+
+  const snapshot = await request('GET', '/api/bootstrap', undefined, customer.cookie);
+  const occupied = snapshot.payload.occupiedSlots.find((slot) => slot.id === first.id);
+  assert.ok(occupied, 'the created booking must be included in occupied slots');
+  assert.equal(occupied.duration, 90, 'the frontend needs the booked duration to handle legacy end-time mismatches');
+
+  const overlap = await request('POST', '/api/bookings', bookingBody(date, {
+    duration: 60, staffId: 'st-03', startTime: '18:00', submissionKey: randomUUID(),
+  }), customer.cookie);
+  assert.equal(overlap.status, 409);
+  assert.equal(overlap.payload.code, 'BOOKING_CONFLICT');
+
+  const adjacent = await request('POST', '/api/bookings', bookingBody(date, {
+    duration: 60, staffId: 'st-03', startTime: '18:30', submissionKey: randomUUID(),
+  }), customer.cookie);
+  assert.equal(adjacent.status, 201, JSON.stringify(adjacent.payload));
+});
+
 test('17. Underpayment is not confirmed/refunded; customer cancellation refunds 50% of the paid amount', async () => {
   const underpaid = await createBooking(futureDate(23));
   const issue = await sendPayment(underpaid, underpaid.finalPrice - 1);
