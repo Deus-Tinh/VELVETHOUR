@@ -48,9 +48,29 @@ function futureDate(days) {
   return date.toISOString().slice(0, 10);
 }
 
+function futureDateOnWeekday(day, minDays = 1) {
+  for (let offset = minDays; offset <= 60; offset += 1) {
+    const date = futureDate(offset);
+    const [year, month, dayOfMonth] = date.split('-').map(Number);
+    if (new Date(Date.UTC(year, month - 1, dayOfMonth)).getUTCDay() === day) return date;
+  }
+  throw new Error('Could not find a future date for the requested weekday.');
+}
+
 function bookingBody(days = 20) {
   return { serviceId: 'signature-body', duration: 60, staffId: 'st-01', date: futureDate(days), startTime: '10:00',
     customerName: 'Nguyễn Minh Anh', customerPhone: '0987654321', customerEmail: '', note: '', submissionKey: `booking-api-test-${days}` };
+}
+
+function readStoredBooking(id) {
+  const row = database.prepare('SELECT payload FROM collection_records WHERE collection = ? AND id = ?').get('bookings', id);
+  return row ? JSON.parse(row.payload) : null;
+}
+
+function writeStoredBooking(booking) {
+  database.prepare('UPDATE collection_records SET payload = ? WHERE collection = ? AND id = ?')
+    .run(JSON.stringify(booking), 'bookings', booking.id);
+  database.prepare("INSERT INTO collection_versions(collection, version) VALUES ('bookings', 1) ON CONFLICT(collection) DO UPDATE SET version = version + 1").run();
 }
 
 function persistedState() {
@@ -243,4 +263,173 @@ test('Public registration creates a signed-in customer and rejects invalid regis
       assert.equal(adminEndpoint.status, 403, 'a publicly registered customer must remain forbidden from admin operations');
     }
   });
+});
+
+test('Staff capabilities keep booking access scoped and make confirmation atomic', async () => {
+  const admin = await login('admin@example.invalid', process.env.SERENITY_TEST_ADMIN_PASSWORD);
+  const specialist = await login('linh@example.invalid', process.env.SERENITY_TEST_STAFF_PASSWORD);
+  const otherStaff = await login('nam@example.invalid', process.env.SERENITY_TEST_STAFF_PASSWORD);
+  const customer = await login('khach@example.invalid', process.env.SERENITY_TEST_CUSTOMER_PASSWORD);
+
+  const staffEscalation = await request('PATCH', '/api/admin/staff/st-01/role', { staffRole: 'senior_specialist' }, specialist.cookie);
+  assert.equal(staffEscalation.status, 403, 'staff cannot raise their own role by calling the admin API');
+  const otherRoleEscalation = await request('PATCH', '/api/admin/staff/st-04/role', { staffRole: 'senior_specialist' }, specialist.cookie);
+  assert.equal(otherRoleEscalation.status, 403, 'staff cannot change another account\'s role');
+  assert.equal((await request('GET', '/api/admin/payments/reconciliation', undefined, specialist.cookie)).status, 403,
+    'staff must not access financial reconciliation data');
+  const invalidRole = await request('PATCH', '/api/admin/staff/st-01/role', { staffRole: 'admin' }, admin.cookie);
+  assert.equal(invalidRole.status, 400);
+  const massAssignment = await request('PATCH', '/api/admin/staff/st-01/role', { staffRole: 'senior_specialist', permissions: ['*'] }, admin.cookie);
+  assert.equal(massAssignment.status, 400, 'the role endpoint rejects client-supplied permissions');
+  const roleUpdated = await request('PATCH', '/api/admin/staff/st-01/role', { staffRole: 'senior_specialist' }, admin.cookie);
+  assert.equal(roleUpdated.status, 200);
+  const updatedSession = await request('GET', '/api/auth/session', undefined, specialist.cookie);
+  assert.equal(updatedSession.payload.user.staffRole, 'senior_specialist');
+  assert.ok(updatedSession.payload.user.permissions.includes('booking.complete_assigned'));
+  const roleList = await request('GET', '/api/admin/staff-invites', undefined, admin.cookie);
+  assert.ok(roleList.payload.invitations.find((row) => row.staffId === 'st-01').permissions.includes('booking.confirm_assigned'));
+  await request('PATCH', '/api/admin/staff/st-01/role', { staffRole: 'specialist' }, admin.cookie);
+
+  const bookingPayload = { ...bookingBody(40), submissionKey: 'staff-confirm-atomic', startTime: '10:00' };
+  const created = await request('POST', '/api/bookings', bookingPayload, customer.cookie);
+  assert.equal(created.status, 201);
+  const booking = readStoredBooking(created.payload.booking.id);
+  delete booking.paymentCode;
+  booking.paymentStatus = 'not_required';
+  booking.revision = Number(booking.revision || 0) + 1;
+  writeStoredBooking(booking);
+
+  const [firstConfirm, secondConfirm] = await Promise.all([
+    request('PATCH', `/api/bookings/${booking.id}/status`, { status: 'Confirmed' }, specialist.cookie),
+    request('PATCH', `/api/bookings/${booking.id}/status`, { status: 'Confirmed' }, specialist.cookie),
+  ]);
+  assert.deepEqual([firstConfirm.status, secondConfirm.status].sort(), [200, 409]);
+  const confirmed = readStoredBooking(booking.id);
+  assert.equal(confirmed.status, 'Confirmed');
+  assert.equal(confirmed.confirmedBy, specialist.user.id);
+  assert.ok(confirmed.confirmedAt);
+  assert.equal(confirmed.statusHistory.filter((entry) => entry.status === 'Confirmed').length, 1);
+  const specialistCheckin = await request('PATCH', `/api/bookings/${booking.id}/status`, { status: 'CheckedIn' }, specialist.cookie);
+  assert.equal(specialistCheckin.status, 403, 'a regular specialist cannot perform senior-specialist status actions');
+
+  const otherBookingResult = await request('POST', '/api/bookings', {
+    ...bookingBody(41), staffId: 'st-04', startTime: '13:00', submissionKey: 'staff-other-booking',
+  }, customer.cookie);
+  assert.equal(otherBookingResult.status, 201);
+  const otherBooking = otherBookingResult.payload.booking;
+  const assignedList = await request('GET', '/api/bookings', undefined, specialist.cookie);
+  assert.ok(assignedList.payload.bookings.every((row) => row.staffId === 'st-01'));
+  assert.ok(!assignedList.payload.bookings.some((row) => row.id === otherBooking.id), 'staff list must not include another specialist\'s booking');
+  const foreignConfirm = await request('PATCH', `/api/bookings/${otherBooking.id}/status`, { status: 'Confirmed' }, specialist.cookie);
+  assert.equal(foreignConfirm.status, 403);
+
+  const declineBookingResult = await request('POST', '/api/bookings', {
+    ...bookingBody(42), startTime: '14:00', submissionKey: 'staff-decline-request',
+  }, customer.cookie);
+  assert.equal(declineBookingResult.status, 201);
+  const declineBooking = declineBookingResult.payload.booking;
+  const missingReason = await request('POST', `/api/bookings/${declineBooking.id}/decline-request`, {}, specialist.cookie);
+  assert.equal(missingReason.status, 400);
+  assert.equal(missingReason.payload.code, 'REASON_REQUIRED');
+  const missingOtherNote = await request('POST', `/api/bookings/${declineBooking.id}/decline-request`, { reason: 'other' }, specialist.cookie);
+  assert.equal(missingOtherNote.status, 400);
+  const wrongStaffDecline = await request('POST', `/api/bookings/${declineBooking.id}/decline-request`, { reason: 'health' }, otherStaff.cookie);
+  assert.equal(wrongStaffDecline.status, 403);
+  const xssNote = '<img src=x onerror=alert(1)>';
+  const declined = await request('POST', `/api/bookings/${declineBooking.id}/decline-request`, { reason: 'other', note: xssNote }, specialist.cookie);
+  assert.equal(declined.status, 201);
+  assert.equal(declined.payload.request.smsStatus, 'not_configured');
+  assert.equal(readStoredBooking(declineBooking.id).status, 'Pending', 'decline request must not cancel or delete the booking');
+  const adminRequests = await request('GET', '/api/admin/booking-decline-requests', undefined, admin.cookie);
+  const alert = adminRequests.payload.requests.find((row) => row.id === declined.payload.request.id);
+  assert.equal(alert.customerPhone, declineBooking.customerPhone);
+  assert.equal(alert.serviceName, declineBooking.serviceName);
+  assert.equal(alert.note, xssNote);
+  assert.equal(alert.smsStatus, 'not_configured');
+  const resolved = await request('POST', `/api/admin/booking-decline-requests/${alert.id}/resolve`, { action: 'keep' }, admin.cookie);
+  assert.equal(resolved.status, 200);
+  assert.equal(readStoredBooking(declineBooking.id).status, 'Pending');
+  const cancelByStaff = await request('PATCH', `/api/bookings/${declineBooking.id}/status`, { status: 'Cancelled' }, specialist.cookie);
+  assert.equal(cancelByStaff.status, 403, 'staff cancellation must use the admin review flow');
+});
+
+test('Approved date-specific day off preserves weekly schedule and blocks new bookings', async () => {
+  const admin = await login('admin@example.invalid', process.env.SERENITY_TEST_ADMIN_PASSWORD);
+  const staff = await login('linh@example.invalid', process.env.SERENITY_TEST_STAFF_PASSWORD);
+  const customer = await login('bao@example.invalid', process.env.SERENITY_TEST_CUSTOMER_PASSWORD);
+  const offDate = futureDateOnWeekday(1, 50);
+  assert.equal(new Date(`${offDate}T00:00:00Z`).getUTCDay(), 1);
+  const created = await request('POST', '/api/bookings', {
+    ...bookingBody(47), date: offDate, startTime: '20:00', submissionKey: 'staff-day-off-affected-booking',
+  }, customer.cookie);
+  assert.equal(created.status, 201, JSON.stringify(created.payload));
+  const beforeStaffRow = database.prepare('SELECT payload FROM collection_records WHERE collection = ? AND id = ?').get('staff', 'st-01');
+  const beforeStaff = JSON.parse(beforeStaffRow.payload);
+  assert.ok(beforeStaff.workingDays.includes(1), 'the normal weekly Monday schedule is active before this exception');
+
+  const forgedStaffId = await request('POST', '/api/staff/day-off-requests', {
+    staffId: 'st-04', date: offDate, reason: 'Sức khỏe',
+  }, staff.cookie);
+  assert.equal(forgedStaffId.status, 400, 'staff identity must come from the authenticated account');
+  const requestOff = await request('POST', '/api/staff/day-off-requests', {
+    date: offDate, reason: 'Sức khỏe', note: 'Xin nghỉ một ngày.',
+  }, staff.cookie);
+  assert.equal(requestOff.status, 201);
+  assert.equal(requestOff.payload.affectedBookings.length, 1);
+  let currentStaff = JSON.parse(database.prepare('SELECT payload FROM collection_records WHERE collection = ? AND id = ?').get('staff', 'st-01').payload);
+  assert.ok(!currentStaff.daysOff.includes(offDate), 'a pending request must not change availability');
+  assert.deepEqual(currentStaff.workingDays, beforeStaff.workingDays);
+
+  const pending = await request('GET', '/api/admin/staff-day-off-requests', undefined, admin.cookie);
+  const dayOff = pending.payload.requests.find((row) => row.id === requestOff.payload.request.id);
+  assert.equal(dayOff.affectedBookings[0].id, created.payload.booking.id);
+  const blockedApproval = await request('POST', `/api/admin/staff-day-off-requests/${dayOff.id}/decision`, { decision: 'approved' }, admin.cookie);
+  assert.equal(blockedApproval.status, 409);
+  assert.equal(blockedApproval.payload.code, 'BOOKINGS_AFFECTED');
+  assert.equal(blockedApproval.payload.impactedBookings[0].customerName, created.payload.booking.customerName);
+
+  const reassign = await request('POST', `/api/admin/bookings/${created.payload.booking.id}/reassign`, {
+    staffId: 'st-04', note: 'Chuyển để xử lý ngày nghỉ.',
+  }, admin.cookie);
+  assert.equal(reassign.status, 200);
+  assert.equal(readStoredBooking(created.payload.booking.id).status, 'Pending');
+  assert.equal(readStoredBooking(created.payload.booking.id).staffId, 'st-04');
+  const approval = await request('POST', `/api/admin/staff-day-off-requests/${dayOff.id}/decision`, { decision: 'approved' }, admin.cookie);
+  assert.equal(approval.status, 200);
+  currentStaff = JSON.parse(database.prepare('SELECT payload FROM collection_records WHERE collection = ? AND id = ?').get('staff', 'st-01').payload);
+  assert.ok(currentStaff.daysOff.includes(offDate));
+  assert.deepEqual(currentStaff.workingDays, beforeStaff.workingDays, 'weekly Monday/weekday configuration must remain unchanged');
+
+  const blockedBooking = await request('POST', '/api/bookings', {
+    ...bookingBody(47), date: offDate, startTime: '12:00', submissionKey: 'staff-day-off-blocked-booking',
+  }, customer.cookie);
+  assert.equal(blockedBooking.status, 400);
+  assert.equal(blockedBooking.payload.code, 'STAFF_UNAVAILABLE');
+});
+
+test('Staff workflow keeps 30, 60, and 90 minute booking windows intact', async () => {
+  const customer = await login('khach@example.invalid', process.env.SERENITY_TEST_CUSTOMER_PASSWORD);
+  const date = futureDate(55);
+  const create = (serviceId, duration, startTime, key) => request('POST', '/api/bookings', {
+    ...bookingBody(55), serviceId, duration, date, startTime, submissionKey: `duration-workflow-${key}`,
+  }, customer.cookie);
+
+  const thirty = await create('temple-eye-relax', 30, '10:00', '30-a');
+  assert.equal(thirty.status, 201);
+  const adjacentThirty = await create('temple-eye-relax', 30, '10:30', '30-b');
+  assert.equal(adjacentThirty.status, 201);
+
+  const sixty = await create('signature-body', 60, '12:00', '60-a');
+  assert.equal(sixty.status, 201);
+  const overlapSixty = await create('signature-body', 60, '12:30', '60-overlap');
+  assert.equal(overlapSixty.status, 409);
+  const adjacentSixty = await create('signature-body', 60, '13:00', '60-b');
+  assert.equal(adjacentSixty.status, 201);
+
+  const ninety = await create('signature-body', 90, '15:00', '90-a');
+  assert.equal(ninety.status, 201);
+  const overlapNinety = await create('signature-body', 90, '16:00', '90-overlap');
+  assert.equal(overlapNinety.status, 409);
+  const adjacentNinety = await create('signature-body', 90, '16:30', '90-b');
+  assert.equal(adjacentNinety.status, 201);
 });

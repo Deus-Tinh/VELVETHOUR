@@ -3345,3 +3345,135 @@ footer.site-footer {
   .music-save-row { align-items: stretch; flex-direction: column; gap: 10px; }
   .music-save-row .btn-primary { width: 100%; text-align: center; justify-content: center; }
 }
+.staff-day-off-panel,
+.admin-staff-workflow-panel {
+  background: #fff;
+  border: 1px solid #e8e1d8;
+  border-radius: 12px;
+  padding: 20px;
+  margin: 0 0 24px;
+  box-shadow: 0 2px 10px rgba(51, 36, 21, 0.04);
+}
+
+.staff-day-off-panel h3,
+.admin-staff-workflow-panel h3 {
+  margin: 0 0 5px;
+  color: var(--text-dark);
+  font-family: var(--font-heading);
+}
+
+.staff-day-off-panel p,
+.admin-staff-workflow-panel p {
+  color: #64748b;
+  font-size: 13px;
+  margin: 0 0 10px;
+}
+
+.staff-day-off-form {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(150px, 1fr)) auto;
+  align-items: end;
+  gap: 12px;
+  margin: 16px 0;
+}
+
+.staff-day-off-form label {
+  display: grid;
+  gap: 6px;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.staff-day-off-form input {
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid #d9d1c8;
+  border-radius: 7px;
+  font: inherit;
+}
+
+.staff-day-off-request-list,
+.admin-request-group {
+  display: grid;
+  gap: 8px;
+}
+
+.staff-day-off-request-row,
+.admin-request-card {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: #faf8f5;
+  color: #475569;
+  font-size: 13px;
+}
+
+.staff-day-off-request-row strong,
+.admin-request-card strong { color: var(--text-dark); }
+.staff-day-off-request-row span { overflow-wrap: anywhere; }
+.staff-day-off-empty { margin: 0; color: #64748b; font-size: 13px; }
+
+.admin-staff-workflow-heading { margin-bottom: 14px; }
+.admin-staff-workflow-panel h4 { margin: 8px 0; color: var(--text-dark); }
+.admin-request-group + .admin-request-group { margin-top: 18px; }
+.admin-request-card { align-items: flex-start; }
+.admin-request-card > div:first-child { min-width: 0; }
+.admin-request-card p { margin: 5px 0; overflow-wrap: anywhere; }
+.admin-request-card small { color: #64748b; }
+.admin-request-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 7px; min-width: 180px; }
+.admin-request-actions select { min-width: 190px; max-width: 260px; }
+.admin-request-error { color: #b42318 !important; }
+.admin-affected-bookings { margin: 10px 0; padding: 10px 12px; background: #fff7ed; border-radius: 7px; color: #9a3412; }
+.admin-affected-bookings ul { margin: 6px 0 0; padding-left: 20px; }
+.admin-affected-bookings li { margin: 4px 0; font-size: 12px; overflow-wrap: anywhere; }
+.admin-no-affected { color: #166534 !important; }
+
+.staff-action-dialog {
+  border: 0;
+  border-radius: 12px;
+  width: min(520px, calc(100vw - 28px));
+  padding: 0;
+  box-shadow: 0 20px 70px rgba(0, 0, 0, 0.28);
+}
+
+.staff-action-dialog::backdrop { background: rgba(28, 25, 23, 0.5); }
+.staff-action-dialog-card { display: grid; gap: 10px; padding: 24px; }
+.staff-action-dialog-card h3 { margin: 0; color: var(--text-dark); font-family: var(--font-heading); }
+.staff-action-dialog-card p { margin: 0 0 6px; color: #64748b; font-size: 13px; line-height: 1.55; }
+.staff-action-dialog-card label { font-size: 13px; font-weight: 600; color: #475569; }
+.staff-action-dialog-card select,
+.staff-action-dialog-card textarea { width: 100%; padding: 10px; border: 1px solid #d9d1c8; border-radius: 7px; font: inherit; }
+.staff-action-dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 10px; }
+
+.schedule-slot-off {
+  display: inline-flex;
+  min-height: 45px;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 10px;
+  border-radius: 7px;
+  background: #f1f2f3;
+  color: #7b8188;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.schedule-day-off-notice { background: #f1f2f3; color: #656d75; border: 1px solid #d8dcdf; }
+.schedule-legend i.is-day-off { background: #aeb4bb; }
+
+@media (max-width: 760px) {
+  .staff-day-off-form { grid-template-columns: 1fr 1fr; }
+  .admin-request-card { flex-direction: column; }
+  .admin-request-actions { justify-content: flex-start; min-width: 0; }
+}
+
+@media (max-width: 520px) {
+  .staff-day-off-form { grid-template-columns: 1fr; }
+  .staff-day-off-request-row { align-items: flex-start; flex-direction: column; }
+  .staff-action-dialog-card { padding: 18px; }
+}
