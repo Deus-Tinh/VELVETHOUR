@@ -7,7 +7,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { assertPersistentSQLiteStorage } from '../server/persistentStorage.js';
 import { assertSqliteIntegrity, createSqliteBackup } from '../server/sqliteMaintenance.js';
 
-test('persistent-volume guard accepts only an existing writable database on a separate Linux filesystem', async () => {
+test('persistent-volume guard accepts only an existing writable database on a separate Linux filesystem',
+  { skip: process.platform === 'win32' ? 'Linux mount semantics are unavailable on Windows.' : false }, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'serenity-volume-guard-'));
   const appRoot = path.join(directory, 'app');
   const dataDir = path.join(directory, 'volume');

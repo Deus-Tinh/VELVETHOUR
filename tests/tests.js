@@ -10,7 +10,7 @@ import { bookingService } from '../assets/js/services/bookingService.js';
 import { authService } from '../assets/js/services/authService.js';
 import { apiClient, recoverLocalStaff } from '../assets/js/services/apiClient.js';
 import { favoriteService, reviewService, contactService, analyticsService } from '../assets/js/services/socialAndAnalyticsService.js';
-import { bookingRepo, promotionRepo, staffRepo, serviceRepo, reviewRepo, categoryRepo, userRepo, contactRepo } from '../assets/js/data/repositories.js';
+import { bookingRepo, promotionRepo, staffRepo, serviceRepo, reviewRepo, categoryRepo, userRepo, contactRepo, settingsRepo } from '../assets/js/data/repositories.js';
 import { validate, schemas, email, phoneVN, required, positiveNumber, price, duration, date, futureOrToday, strongPassword } from '../assets/js/core/validators.js';
 import { addDays, todayStr, clock } from '../assets/js/core/utils.js';
 import { createTestRunner } from './testRunner.js';
@@ -635,6 +635,8 @@ export async function runAllTests() {
   await test('90-minute booking duration blocks slots even when a legacy end time is short', async () => {
     const id = 'TEST_90_MINUTE_OCCUPANCY';
     const date = addDays(todayStr(), 41);
+    const previousRoomCount = settingsService.get().roomCount;
+    settingsRepo.update('main', { ...settingsService.get(), roomCount: 1 });
     bookingRepo.create({ id, code: id, serviceId: 'signature-body', serviceName: 'Signature Body Massage',
       duration: 90, staffId: 'st-01', staffName: 'TEST Staff', date, startTime: '17:00', endTime: '18:00',
       status: 'Confirmed', roomNumber: null });
@@ -642,7 +644,29 @@ export async function runAllTests() {
       const slots = bookingService.getAvailableSlots(date, 'st-01', 30);
       expect(slots.find((slot) => slot.time === '18:00')?.available).toBe(false);
       expect(slots.find((slot) => slot.time === '18:30')?.available).toBe(true);
-    } finally { bookingRepo.remove(id); }
+      const otherStaffSlots = bookingService.getAvailableSlots(date, 'st-04', 30);
+      expect(otherStaffSlots.find((slot) => slot.time === '18:00')?.available).toBe(false);
+      expect(otherStaffSlots.find((slot) => slot.time === '18:30')?.available).toBe(true);
+    } finally {
+      bookingRepo.remove(id);
+      settingsRepo.update('main', { ...settingsService.get(), roomCount: previousRoomCount });
+    }
+  });
+
+  await test('booking API cache keeps duration so the browser uses the same occupied interval', async () => {
+    const id = 'TEST_API_BOOKING_DURATION_CACHE';
+    const originalFetch = globalThis.fetch;
+    const booking = { id, staffId: 'st-01', date: addDays(todayStr(), 42), startTime: '17:00',
+      endTime: '18:00', duration: 90, roomNumber: 1, status: 'Pending' };
+    try {
+      globalThis.fetch = async () => new Response(JSON.stringify({ booking }), { status: 201,
+        headers: { 'content-type': 'application/json' } });
+      await apiClient.createBooking({});
+      expect(apiClient.getOccupiedSlots().find((item) => item.id === id)?.duration).toBe(90);
+      globalThis.fetch = async () => new Response(JSON.stringify({ booking: { ...booking, status: 'Cancelled' } }), { status: 200,
+        headers: { 'content-type': 'application/json' } });
+      await apiClient.createBooking({});
+    } finally { globalThis.fetch = originalFetch; }
   });
 
   await test('45. Booking accepts the exact 30-minute lead and rejects closed/too-far dates', async () => {

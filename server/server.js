@@ -24,7 +24,7 @@ import { migrateSiteContentDatabase } from './siteContentDatabase.js';
 import { createHolidaySaleOperations } from './holidaySaleOperations.js';
 import { createSiteContentOperations, SITE_MENU_ROUTES } from './siteContentOperations.js';
 import { migrateAdminAgentHistory, createAdminAgentHistory, AGENT_HISTORY_RETENTION_DAYS } from './adminAgentHistory.js';
-import { createPaymentCode, createPaymentOperations, paymentInstructions, publicPaymentConfig } from './paymentOperations.js';
+import { createPaymentCode, createPaymentOperations, migratePaymentDatabase, paymentInstructions, publicPaymentConfig } from './paymentOperations.js';
 import { AppError } from '../assets/js/core/errors.js';
 import { calculatePrice as calculateDomainPrice } from '../assets/js/domain/pricingService.js';
 import {
@@ -35,6 +35,7 @@ import { isStrongPassword, schemas, validate } from '../assets/js/core/validator
 import { buildMusicManifest } from './musicLibrary.js';
 import { assertPersistentSQLiteStorage } from './persistentStorage.js';
 import { assertSqliteIntegrity, createSqliteBackup } from './sqliteMaintenance.js';
+import { openAsyncDatabase, wrapSqliteDatabase } from './asyncDatabase.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 if (!process.env.NODE_TEST_CONTEXT && typeof process.loadEnvFile === 'function') {
@@ -43,7 +44,9 @@ if (!process.env.NODE_TEST_CONTEXT && typeof process.loadEnvFile === 'function')
 const SERVER_DATA_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'data');
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const ALLOW_EPHEMERAL = process.env.SERENITY_ALLOW_EPHEMERAL_STORAGE === 'true';
-if (IS_PRODUCTION && !ALLOW_EPHEMERAL) {
+const DATABASE_URL = String(process.env.DATABASE_URL || '').trim();
+const IS_POSTGRES = Boolean(DATABASE_URL);
+if (IS_PRODUCTION && !ALLOW_EPHEMERAL && !IS_POSTGRES) {
   for (const variable of ['SERENITY_DATA_DIR', 'SERENITY_DB_PATH', 'SERENITY_BACKUP_DIR']) {
     if (!process.env[variable] || !path.isAbsolute(process.env[variable])) {
       throw new Error(`Production startup refused: ${variable} must be set to an absolute persistent-volume path.`);
@@ -58,7 +61,7 @@ const PORT = Number(process.env.PORT || process.env.SERENITY_PORT || 3001);
 if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) throw new Error('PORT or SERENITY_PORT must be an integer between 1 and 65535.');
 const HOST = process.env.SERENITY_HOST || '';
 
-if (IS_PRODUCTION && !ALLOW_EPHEMERAL) {
+if (IS_PRODUCTION && !ALLOW_EPHEMERAL && !IS_POSTGRES) {
   await assertPersistentSQLiteStorage({ appRoot: ROOT, dataDir: DATA_DIR, databasePath: DATABASE_PATH, backupDir: BACKUP_DIR });
   await mkdir(MUSIC_DIRECTORY, { recursive: true });
 } else {
@@ -80,8 +83,12 @@ const MIME = {
   '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.avif': 'image/avif', '.ico': 'image/x-icon', '.woff2': 'font/woff2',
 };
 
-const db = new DatabaseSync(DATABASE_PATH);
-db.exec(`
+let db;
+if (IS_POSTGRES) {
+  db = await openAsyncDatabase({ databaseUrl: DATABASE_URL });
+} else {
+  const sqlite = new DatabaseSync(DATABASE_PATH);
+  sqlite.exec(`
   PRAGMA journal_mode = WAL;
   PRAGMA synchronous = NORMAL;
   PRAGMA temp_store = MEMORY;
@@ -133,11 +140,14 @@ db.exec(`
     message_type TEXT NOT NULL, content TEXT NOT NULL, metadata TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS chat_messages_conversation_time ON chat_messages(conversation_id, created_at);
-`);
+  `);
 
-migratePricingDatabase(db);
-migrateSiteContentDatabase(db);
-migrateAdminAgentHistory(db);
+  migratePricingDatabase(sqlite);
+  migrateSiteContentDatabase(sqlite);
+  migrateAdminAgentHistory(sqlite);
+  migratePaymentDatabase(sqlite);
+  db = wrapSqliteDatabase(sqlite);
+}
 
 const q = {
   records: db.prepare('SELECT payload FROM collection_records WHERE collection = ? ORDER BY rowid'),
@@ -148,6 +158,7 @@ const q = {
   deleteCollection: db.prepare('DELETE FROM collection_records WHERE collection = ?'),
   version: db.prepare('SELECT version FROM collection_versions WHERE collection = ?'),
   setVersion: db.prepare('INSERT INTO collection_versions(collection, version) VALUES (?, ?) ON CONFLICT(collection) DO UPDATE SET version = excluded.version'),
+  incrementVersion: db.prepare('INSERT INTO collection_versions(collection, version) VALUES (?, 1) ON CONFLICT(collection) DO UPDATE SET version = collection_versions.version + 1 RETURNING version'),
   meta: db.prepare('SELECT value FROM metadata WHERE key = ?'),
   setMeta: db.prepare('INSERT INTO metadata(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'),
   sessionByHash: db.prepare('SELECT user_id, expires_at FROM sessions WHERE token_hash = ?'),
@@ -188,14 +199,10 @@ const q = {
   dataVersion: db.prepare('PRAGMA data_version'),
 };
 
-q.deleteExpiredSessions.run(Date.now());
-q.deleteExpiredPasswordResetOtps.run(Date.now());
+await q.deleteExpiredSessions.run(Date.now());
+await q.deleteExpiredPasswordResetOtps.run(Date.now());
 
-function transaction(work) {
-  db.exec('BEGIN IMMEDIATE');
-  try { const result = work(); db.exec('COMMIT'); return result; }
-  catch (error) { db.exec('ROLLBACK'); throw error; }
-}
+function transaction(work, options) { return db.transaction(work, options); }
 
 
 // ── In-memory row cache ───────────────────────────────────────────────────────
@@ -208,17 +215,21 @@ let internalWriteSeq = 0;
 const rowCache = new Map(); // collection → { version, seq, rows }
 
 function parseRows(collection) {
-  const currentDataVersion = q.dataVersion.get()?.data_version || 0;
-  if (currentDataVersion !== lastDataVersion) {
-    lastDataVersion = currentDataVersion;
-    rowCache.clear();
-  }
-  const v = versionOf(collection);
-  const cached = rowCache.get(collection);
-  if (cached && cached.version === v && cached.seq === internalWriteSeq) return cached.rows;
-  const rows = q.records.all(collection).map((row) => JSON.parse(row.payload));
-  rowCache.set(collection, { version: v, seq: internalWriteSeq, rows });
-  return rows;
+  return (async () => {
+    if (!db.isPostgres) {
+      const currentDataVersion = (await q.dataVersion.get())?.data_version || 0;
+      if (currentDataVersion !== lastDataVersion) {
+        lastDataVersion = currentDataVersion;
+        rowCache.clear();
+      }
+    }
+    const v = await versionOf(collection);
+    const cached = rowCache.get(collection);
+    if (cached && cached.version === v && cached.seq === internalWriteSeq) return cached.rows;
+    const rows = (await q.records.all(collection)).map((row) => JSON.parse(row.payload));
+    rowCache.set(collection, { version: v, seq: internalWriteSeq, rows });
+    return rows;
+  })();
 }
 
 function invalidateRowCache(collection) {
@@ -227,23 +238,23 @@ function invalidateRowCache(collection) {
   else rowCache.clear();
 }
 
-function getRecord(collection, id) {
-  const row = q.record.get(collection, id);
+async function getRecord(collection, id) {
+  const row = await q.record.get(collection, id);
   return row ? JSON.parse(row.payload) : null;
 }
-function saveRecord(collection, record) {
-  if (collection === 'bookings') record.revision = Number(getRecord(collection, record.id)?.revision || 0) + 1;
-  q.upsert.run(collection, record.id, JSON.stringify(record));
+async function saveRecord(collection, record) {
+  if (collection === 'bookings') record.revision = Number((await getRecord(collection, record.id))?.revision || 0) + 1;
+  await q.upsert.run(collection, record.id, JSON.stringify(record));
   invalidateRowCache(collection);
 }
-function removeRecord(collection, id) {
-  q.deleteRecord.run(collection, id);
+async function removeRecord(collection, id) {
+  await q.deleteRecord.run(collection, id);
   invalidateRowCache(collection);
 }
-function versionOf(collection) { return q.version.get(collection)?.version || 0; }
-function nextVersion(collection) {
-  const version = versionOf(collection) + 1;
-  q.setVersion.run(collection, version);
+async function versionOf(collection) { return (await q.version.get(collection))?.version || 0; }
+async function nextVersion(collection) {
+  const row = await q.incrementVersion.get(collection);
+  const version = Number(row.version);
   invalidateRowCache(collection);
   return version;
 }
@@ -289,15 +300,15 @@ function defaultAccountPasswords(includeDemoData) {
   return passwords;
 }
 
-function initializeDatabase() {
-  if (q.meta.get('initialized')?.value === 'yes') return;
+async function initializeDatabase() {
+  if ((await q.meta.get('initialized'))?.value === 'yes') return;
   const isProduction = process.env.NODE_ENV === 'production';
   const isStrictProduction = isProduction && !ALLOW_EPHEMERAL;
   const includeDemoData = !isProduction && String(process.env.SERENITY_SEED_DEMO_DATA || '').toLowerCase() === 'true';
   const accountPasswords = isStrictProduction ? {} : defaultAccountPasswords(includeDemoData);
   storage.useMemory();
   seedIfNeeded({ includeDemoData, accountPasswords });
-  transaction(() => {
+  await transaction(async () => {
     for (const [collection, repo] of Object.entries(repos)) {
       const records = isStrictProduction && (collection === 'users' || collection === 'staff') ? [] : repo.getAll();
       for (const source of records) {
@@ -311,37 +322,37 @@ function initializeDatabase() {
           }
           delete record.salt;
         }
-        q.insert.run(collection, record.id, JSON.stringify(record));
+        await q.insert.run(collection, record.id, JSON.stringify(record));
       }
-      q.setVersion.run(collection, 1);
+      await q.setVersion.run(collection, 1);
     }
-    q.setMeta.run('initialized', 'yes');
+    await q.setMeta.run('initialized', 'yes');
   });
 }
 
-initializeDatabase();
+await initializeDatabase();
 
-function migrateManagedStaffAndAdminAccounts() {
+async function migrateManagedStaffAndAdminAccounts() {
   if (process.env.NODE_ENV === 'production' && !ALLOW_EPHEMERAL) return;
   const migrationKey = 'managed_staff_admin_default_password_v1';
-  if (q.meta.get(migrationKey)?.value === '1') return;
+  if ((await q.meta.get(migrationKey))?.value === '1') return;
 
   storage.useMemory();
   seedIfNeeded({ includeDemoData: false });
   const seedStaff = repos.staff.getAll();
   const passwords = defaultAccountPasswords(false);
 
-  transaction(() => {
+  await transaction(async () => {
     let staffChanged = 0;
     for (const member of seedStaff) {
-      if (!getRecord('staff', member.id)) {
-        saveRecord('staff', member);
+      if (!await getRecord('staff', member.id)) {
+        await saveRecord('staff', member);
         staffChanged += 1;
       }
     }
-    if (staffChanged) nextVersion('staff');
+    if (staffChanged) await nextVersion('staff');
 
-    const existingUsers = parseRows('users');
+    const existingUsers = await parseRows('users');
     for (const managed of DEFAULT_MANAGED_USERS) {
       const existing = existingUsers.find((u) => u.id === managed.id || normalizeEmailAddress(u.email) === normalizeEmailAddress(managed.email));
       const password = passwords[managed.email] || DEFAULT_STAFF_ADMIN_PASSWORD;
@@ -362,18 +373,18 @@ function migrateManagedStaffAndAdminAccounts() {
         updatedAt: new Date().toISOString(),
       };
       delete updated.salt;
-      saveRecord('users', updated);
+      await saveRecord('users', updated);
     }
-    nextVersion('users');
-    q.setMeta.run(migrationKey, '1');
+    await nextVersion('users');
+    await q.setMeta.run(migrationKey, '1');
   });
 }
 
-migrateManagedStaffAndAdminAccounts();
+await migrateManagedStaffAndAdminAccounts();
 
-function ensureProductionAdmin() {
+async function ensureProductionAdmin() {
   if (process.env.NODE_ENV !== 'production') return;
-  if (parseRows('users').some((user) => user.role === 'admin' && user.active !== false)) return;
+  if ((await parseRows('users')).some((user) => user.role === 'admin' && user.active !== false)) return;
 
   const email = normalizeEmailAddress(process.env.SERENITY_INITIAL_ADMIN_EMAIL);
   const password = String(process.env.SERENITY_INITIAL_ADMIN_PASSWORD || '');
@@ -384,7 +395,7 @@ function ensureProductionAdmin() {
   if (!/^\S+@\S+\.\S{2,}$/.test(email) || !isStrongPassword(password) || name.length < 2) {
     throw new Error('Initial production admin settings are invalid. Check the email, display name, and password strength.');
   }
-  if (parseRows('users').some((user) => normalizeEmailAddress(user.email) === email)) {
+  if ((await parseRows('users')).some((user) => normalizeEmailAddress(user.email) === email)) {
     throw new Error('Initial production admin email already belongs to a non-admin account.');
   }
 
@@ -394,96 +405,96 @@ function ensureProductionAdmin() {
     passwordSalt, passwordHash: scryptSync(password, passwordSalt, 64).toString('hex'),
     createdAt: new Date().toISOString(),
   };
-  transaction(() => {
-    saveRecord('users', admin);
-    nextVersion('users');
+  await transaction(async () => {
+    await saveRecord('users', admin);
+    await nextVersion('users');
   });
 }
 
-ensureProductionAdmin();
+await ensureProductionAdmin();
 
-function migrateAdditionalPackageSeeds() {
+async function migrateAdditionalPackageSeeds() {
   const migrationKey = 'additional_package_seed_version';
-  if (q.meta.get(migrationKey)?.value === '1') return;
+  if ((await q.meta.get(migrationKey))?.value === '1') return;
 
   const seedIds = new Set(ADDITIONAL_PACKAGE_SEED_IDS);
   const packages = SERVICES_SEED.filter((service) => seedIds.has(service.id) && getServiceKind(service) === 'package');
   if (packages.length !== seedIds.size) throw new Error('Additional package seed IDs do not match package records.');
 
-  transaction(() => {
+  await transaction(async () => {
     let inserted = 0;
     for (const service of packages) {
-      if (q.record.get('services', service.id)) continue;
+      if (await q.record.get('services', service.id)) continue;
       const { categoryName: _categoryName, ...record } = service;
       const seedIndex = SERVICES_SEED.indexOf(service);
-      saveRecord('services', {
+      await saveRecord('services', {
         ...record,
         active: true,
         createdAt: new Date(Date.UTC(2026, 0, 1 + seedIndex)).toISOString(),
       });
       inserted += 1;
     }
-    if (inserted) nextVersion('services');
-    q.setMeta.run(migrationKey, '1');
+    if (inserted) await nextVersion('services');
+    await q.setMeta.run(migrationKey, '1');
   });
 }
 
-migrateAdditionalPackageSeeds();
+await migrateAdditionalPackageSeeds();
 
-function migrateAdditionalTherapySeeds() {
+async function migrateAdditionalTherapySeeds() {
   const migrationKey = 'additional_therapy_seed_version';
-  if (q.meta.get(migrationKey)?.value === '1') return;
+  if ((await q.meta.get(migrationKey))?.value === '1') return;
 
   const seedIds = new Set(ADDITIONAL_THERAPY_SEED_IDS);
   const therapies = SERVICES_SEED.filter((service) => seedIds.has(service.id) && getServiceKind(service) === 'therapy');
   if (therapies.length !== seedIds.size) throw new Error('Additional therapy seed IDs do not match therapy records.');
 
-  transaction(() => {
+  await transaction(async () => {
     let inserted = 0;
     for (const service of therapies) {
-      if (q.record.get('services', service.id)) continue;
+      if (await q.record.get('services', service.id)) continue;
       const { categoryName: _categoryName, ...record } = service;
       const seedIndex = SERVICES_SEED.indexOf(service);
-      saveRecord('services', {
+      await saveRecord('services', {
         ...record,
         active: true,
         createdAt: new Date(Date.UTC(2026, 0, 1 + seedIndex)).toISOString(),
       });
       inserted += 1;
     }
-    if (inserted) nextVersion('services');
-    q.setMeta.run(migrationKey, '1');
+    if (inserted) await nextVersion('services');
+    await q.setMeta.run(migrationKey, '1');
   });
 }
 
-migrateAdditionalTherapySeeds();
+await migrateAdditionalTherapySeeds();
 
-function migrateLegacySeedServiceImages() {
+async function migrateLegacySeedServiceImages() {
   const migrationKey = 'legacy_seed_service_image_version';
-  if (q.meta.get(migrationKey)?.value === '1') return;
+  if ((await q.meta.get(migrationKey))?.value === '1') return;
 
   const replacements = new Map([
     ['foot-back-neck', 'back-massage-01'],
     ['deo-dai-nhe-chan', 'thai-stretch-01'],
   ]);
-  transaction(() => {
+  await transaction(async () => {
     let updated = 0;
     for (const [serviceId, imageId] of replacements) {
-      const service = getRecord('services', serviceId);
+      const service = await getRecord('services', serviceId);
       if (!service || service.imageId !== 'foot-01') continue;
-      saveRecord('services', { ...service, imageId });
+      await saveRecord('services', { ...service, imageId });
       updated += 1;
     }
-    if (updated) nextVersion('services');
-    q.setMeta.run(migrationKey, '1');
+    if (updated) await nextVersion('services');
+    await q.setMeta.run(migrationKey, '1');
   });
 }
 
-migrateLegacySeedServiceImages();
+await migrateLegacySeedServiceImages();
 
-function migrateServiceCatalogDuplicates() {
+async function migrateServiceCatalogDuplicates() {
   const migrationKey = 'service_catalog_duplicate_cleanup_version';
-  if (q.meta.get(migrationKey)?.value === '1') return;
+  if ((await q.meta.get(migrationKey))?.value === '1') return;
 
   const imageReplacements = new Map([
     ['foot-back-neck', ['foot-01', 'back-massage-01']],
@@ -494,16 +505,16 @@ function migrateServiceCatalogDuplicates() {
     ['goi-thao-moc-cham-da', ['facial-01', 'pkg-goi-thao-moc-01']],
   ]);
 
-  transaction(() => {
+  await transaction(async () => {
     let changed = 0;
     for (const [serviceId, [oldImageId, imageId]] of imageReplacements) {
-      const service = getRecord('services', serviceId);
+      const service = await getRecord('services', serviceId);
       if (!service || service.imageUrl || service.imageId !== oldImageId) continue;
-      saveRecord('services', { ...service, imageId });
+      await saveRecord('services', { ...service, imageId });
       changed += 1;
     }
 
-    const duplicate = getRecord('services', 'luxe-escape');
+    const duplicate = await getRecord('services', 'luxe-escape');
     const duplicateComponents = ['foot-head-neck', 'herbal-hair-wash', 'hot-stone'];
     const sameComponents = duplicate && getServiceKind(duplicate) === 'package'
       && getPackageComponentIds(duplicate).slice().sort().join('|') === duplicateComponents.slice().sort().join('|');
@@ -513,23 +524,27 @@ function migrateServiceCatalogDuplicates() {
       && duplicate.shortDesc === 'Trải nghiệm xa hoa 180 phút: Xông hơi thảo mộc + Ngâm bồn sữa tươi + Massage đá nóng & Bấm huyệt chân + Gội đầu dưỡng sinh.'
       && duplicate.fullDesc === 'Trải nghiệm đỉnh cao không giới hạn. Dành riêng cho các cặp đôi hoặc cá nhân muốn tận hưởng kỳ nghỉ dưỡng trọn vẹn giữa lòng Sài Gòn mà không cần đi xa.';
     if (sameComponents && matchesSeed) {
-      const hasReferences = ['bookings', 'reviews', 'favorites'].some((collection) => (
-        parseRows(collection).some((record) => record.serviceId === duplicate.id)
-      ));
+      let hasReferences = false;
+      for (const collection of ['bookings', 'reviews', 'favorites']) {
+        if ((await parseRows(collection)).some((record) => record.serviceId === duplicate.id)) {
+          hasReferences = true;
+          break;
+        }
+      }
       if (hasReferences) {
-        saveRecord('services', { ...duplicate, active: false, updatedAt: new Date().toISOString() });
+        await saveRecord('services', { ...duplicate, active: false, updatedAt: new Date().toISOString() });
       } else {
-        removeRecord('services', duplicate.id);
+        await removeRecord('services', duplicate.id);
       }
       changed += 1;
     }
 
-    if (changed) nextVersion('services');
-    q.setMeta.run(migrationKey, '1');
+    if (changed) await nextVersion('services');
+    await q.setMeta.run(migrationKey, '1');
   });
 }
 
-migrateServiceCatalogDuplicates();
+await migrateServiceCatalogDuplicates();
 
 class HttpError extends Error {
   constructor(status, message, code = 'REQUEST_ERROR', fields = null) {
@@ -542,10 +557,10 @@ const holidaySales = createHolidaySaleOperations({ db, getRecord, parseRows, sav
   canCollectAdjustment: () => publicPaymentConfig().enabled, HttpError });
 const paymentOperations = createPaymentOperations({ db, getRecord, parseRows, saveRecord, nextVersion, transaction,
   withAudit,
-  findConflict: ({ staffId, date, startTime, durationMinutes, excludeId }) => findConflict({
-    staffId, date, startTime, durationMinutes, slotStep: Number(getRecord('settings', 'main')?.slotStep || 30), excludeId,
+  findConflict: async ({ staffId, date, startTime, durationMinutes, excludeId }) => findConflict({
+    staffId, date, startTime, durationMinutes, slotStep: Number((await getRecord('settings', 'main'))?.slotStep || 30), excludeId,
   }),
-  hasRoomConflict: (booking) => activeBookings().some((other) => other.id !== booking.id
+  hasRoomConflict: async (booking) => (await activeBookings()).some((other) => other.id !== booking.id
     && other.date === booking.date && Number(other.roomNumber) > 0 && Number(other.roomNumber) === Number(booking.roomNumber)
     && overlap(minOf(other.startTime), minOf(other.endTime), minOf(booking.startTime), minOf(booking.endTime))),
   finalizeReschedulePayment: holidaySales.finalizeReschedulePayment,
@@ -553,8 +568,8 @@ const paymentOperations = createPaymentOperations({ db, getRecord, parseRows, sa
 });
 const siteContent = createSiteContentOperations({ db, transaction, nextVersion, withAudit, businessNow, HttpError });
 const agentHistory = createAdminAgentHistory({ db, transaction, HttpError });
-agentHistory.recoverInterrupted();
-agentHistory.prune();
+await agentHistory.recoverInterrupted();
+await agentHistory.prune();
 
 function businessNow() {
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -590,9 +605,9 @@ function bookingOccupiesSlot(booking, now = Date.now()) {
   if (booking.paymentStatus === 'awaiting_payment' && (!Number.isFinite(paymentExpiresAt) || paymentExpiresAt <= now)) return false;
   return true;
 }
-function activeBookings() {
+async function activeBookings() {
   const now = Date.now();
-  const bookings = parseRows('bookings');
+  const bookings = await parseRows('bookings');
   const active = bookings.filter((booking) => bookingOccupiesSlot(booking, now));
   const rescheduleHolds = bookings.filter((booking) => Date.parse(booking.reschedulePaymentRequest?.expiresAt || '') > now)
     .map((booking) => ({
@@ -610,26 +625,30 @@ function activeBookings() {
   return [...active, ...rescheduleHolds];
 }
 function overlap(aStart, aEnd, bStart, bEnd) { return aStart < bEnd && aEnd > bStart; }
-function findConflict({ staffId, date, startTime, durationMinutes, slotStep, excludeId = null }) {
+async function findConflict({ staffId, date, startTime, durationMinutes, slotStep, excludeId = null }) {
   const requestedStart = minOf(startTime);
   const requestedEnd = bookingLockEndMinute(requestedStart, durationMinutes, slotStep);
-  return activeBookings().some((booking) => {
+  return (await activeBookings()).some((booking) => {
     if (booking.id === excludeId || booking.staffId !== staffId || booking.date !== date) return false;
     const bookingStart = minOf(booking.startTime);
-    const storedDuration = Number(booking.duration);
-    const actualDuration = Number.isInteger(storedDuration) && storedDuration > 0
-      ? storedDuration
-      : minOf(booking.endTime) - bookingStart;
+    const actualDuration = actualBookingEndMinute(booking) - bookingStart;
     const bookingLockEnd = bookingLockEndMinute(bookingStart, actualDuration, slotStep);
     return overlap(requestedStart, requestedEnd, bookingStart, bookingLockEnd);
   });
 }
-function allocateRoom({ date, startTime, endTime, excludeId = null, roomCount = 0 }) {
+function actualBookingEndMinute(booking) {
+  const start = minOf(booking.startTime);
+  const duration = Number(booking.duration);
+  if (Number.isInteger(duration) && duration > 0 && duration <= 480) return start + duration;
+  return minOf(booking.endTime);
+}
+async function allocateRoom({ date, startTime, durationMinutes, excludeId = null, roomCount = 0 }) {
   const capacity = Number(roomCount ?? 0);
   if (!Number.isSafeInteger(capacity) || capacity < 0 || capacity > 100) throw new HttpError(503, 'Cài đặt số phòng chưa hợp lệ. Vui lòng báo quản trị viên.', 'SCHEDULE_INVALID');
   if (capacity <= 0) return null;
-  const overlapping = activeBookings().filter((booking) => booking.id !== excludeId && booking.date === date &&
-    overlap(minOf(startTime), minOf(endTime), minOf(booking.startTime), minOf(booking.endTime)));
+  const requestedEnd = minOf(startTime) + durationMinutes;
+  const overlapping = (await activeBookings()).filter((booking) => booking.id !== excludeId && booking.date === date &&
+    overlap(minOf(startTime), requestedEnd, minOf(booking.startTime), actualBookingEndMinute(booking)));
   const used = new Set();
   let unassignedCount = 0;
   for (const booking of overlapping) {
@@ -646,16 +665,16 @@ function allocateRoom({ date, startTime, endTime, excludeId = null, roomCount = 
   if (!roomNumber) throw new HttpError(409, 'Tất cả phòng đều đã được đặt trong khung giờ này. Vui lòng chọn giờ khác.', 'ROOM_CAPACITY');
   return roomNumber;
 }
-function assertSlot({ serviceId, duration, staffId, date, startTime, excludeId = null }) {
+async function assertSlot({ serviceId, duration, staffId, date, startTime, excludeId = null }) {
   if (!validDate(date) || typeof startTime !== 'string' || !timePattern.test(startTime)) throw new HttpError(400, 'Ngày hoặc giờ đặt lịch không hợp lệ.', 'INVALID_SLOT');
   if (typeof serviceId !== 'string' || !serviceId.trim()) throw new HttpError(400, 'Vui lòng chọn liệu trình hợp lệ.', 'SERVICE_INVALID');
   if (typeof staffId !== 'string' || !staffId.trim()) throw new HttpError(400, 'Vui lòng chọn chuyên viên hợp lệ.', 'STAFF_INVALID');
   if (duration != null && !['number', 'string'].includes(typeof duration)) throw new HttpError(400, 'Thời lượng liệu trình không hợp lệ.', 'INVALID_DURATION');
-  const settings = getRecord('settings', 'main') || {};
-  const rawService = getRecord('services', serviceId);
-  const services = parseRows('services').map(normalizeServiceRecord);
+  const settings = await getRecord('settings', 'main') || {};
+  const rawService = await getRecord('services', serviceId);
+  const services = (await parseRows('services')).map(normalizeServiceRecord);
   const service = normalizeServiceRecord(rawService);
-  const staff = getRecord('staff', staffId);
+  const staff = await getRecord('staff', staffId);
   if (!service || !isServiceBookable(service, services)) throw new HttpError(400, 'Liệu trình hoặc gói trị liệu không còn khả dụng.', 'SERVICE_INVALID');
   if (!staff || staff.active === false) throw new HttpError(400, 'Chuyên viên không khả dụng.', 'STAFF_INVALID');
   const durationMinutes = Number(duration ?? service.duration);
@@ -690,15 +709,15 @@ function assertSlot({ serviceId, duration, staffId, date, startTime, excludeId =
   if (staff.breakStart && staff.breakEnd) breaks.push({ startTime: staff.breakStart, endTime: staff.breakEnd });
   if (breaks.some((item) => timePattern.test(item.startTime || '') && timePattern.test(item.endTime || '') &&
       overlap(minOf(startTime), endMinute, minOf(item.startTime), minOf(item.endTime)))) throw new HttpError(400, 'Khung giờ trùng với giờ nghỉ của chuyên viên.', 'STAFF_BREAK');
-  if (findConflict({ staffId, date, startTime, durationMinutes, slotStep, excludeId })) {
+  if (await findConflict({ staffId, date, startTime, durationMinutes, slotStep, excludeId })) {
     throw new HttpError(409, 'Chuyên viên bận giờ này. Vui lòng chọn giờ hoặc chuyên viên khác.', 'BOOKING_CONFLICT');
   }
-  const roomNumber = allocateRoom({ date, startTime, endTime, excludeId, roomCount: settings.roomCount });
+  const roomNumber = await allocateRoom({ date, startTime, durationMinutes, excludeId, roomCount: settings.roomCount });
   const variant = service.variants?.find((item) => Number(item.duration) === durationMinutes);
   return { service, staff, duration: durationMinutes, startTime, endTime, roomNumber, originalPrice: Number(variant?.price ?? service.price) };
 }
 
-function validateServiceCollection(records) {
+async function validateServiceCollection(records) {
   if (new Set(records.map((record) => record.id)).size !== records.length) {
     throw new HttpError(400, 'Danh sách liệu trình có mã bị trùng.', 'DUPLICATE_SERVICE_ID');
   }
@@ -737,7 +756,7 @@ function validateServiceCollection(records) {
       throw new HttpError(400, `Mức đặt mặc định của gói "${record.name || record.id}" không khớp với danh sách mức đặt.`, 'PACKAGE_DEFAULT_VARIANT_INVALID');
     }
     const componentIds = getPackageComponentIds(record);
-    const existing = getRecord('services', record.id);
+    const existing = await getRecord('services', record.id);
     const legacyWithoutComponents = existing && existing.kind == null && !Array.isArray(existing.components);
     if (!componentIds.length) {
       // Preserve older custom package records during unrelated catalog saves; they remain hidden from booking until configured.
@@ -764,8 +783,8 @@ function validateServiceCollection(records) {
   }
 }
 
-function withAudit(actor, action, bookingId, details = {}) {
-  db.prepare('INSERT INTO audit_log(id, actor_id, actor_role, action, booking_id, details, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+async function withAudit(actor, action, bookingId, details = {}) {
+  await db.prepare('INSERT INTO audit_log(id, actor_id, actor_role, action, booking_id, details, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
     .run(randomUUID(), actor?.id || null, actor?.role || 'guest', action, bookingId || null, JSON.stringify(details), new Date().toISOString());
 }
 
@@ -783,28 +802,28 @@ async function createBookingForActor(body, actor) {
   // An idempotency token belongs to one actor; another customer cannot retrieve their booking.
   const submissionKey = String(body.submissionKey || `${phone}_${body.serviceId}_${body.date}_${body.startTime}`).slice(0, 200);
   const dedupe = `${actor.id}:${submissionKey}`;
-  const previous = db.prepare('SELECT booking_id FROM booking_dedupe WHERE token = ?').get(dedupe);
+  const previous = await db.prepare('SELECT booking_id FROM booking_dedupe WHERE token = ?').get(dedupe);
   const belongsToActor = (booking) => actor.role === 'customer' ? booking?.userId === actor.id : booking?.statusHistory?.[0]?.by === actor.id;
   if (previous) {
-    const booking = getRecord('bookings', previous.booking_id);
+    const booking = await getRecord('bookings', previous.booking_id);
     if (!belongsToActor(booking)) throw new HttpError(409, 'Yêu cầu đặt lịch này đã được sử dụng. Vui lòng tải lại rồi thử lại.', 'SUBMISSION_CONFLICT');
     return { booking, status: 200 };
   }
   // Keep retries created before token scoping compatible, but never reveal another actor's record.
-  const legacy = db.prepare('SELECT booking_id FROM booking_dedupe WHERE token = ?').get(submissionKey);
-  const legacyBooking = legacy ? getRecord('bookings', legacy.booking_id) : null;
+  const legacy = await db.prepare('SELECT booking_id FROM booking_dedupe WHERE token = ?').get(submissionKey);
+  const legacyBooking = legacy ? await getRecord('bookings', legacy.booking_id) : null;
   if (belongsToActor(legacyBooking)) return { booking: legacyBooking, status: 200 };
   if (!publicPaymentConfig().enabled) {
     throw new HttpError(503, 'Thanh toán đặt lịch chưa được cấu hình an toàn. Vui lòng liên hệ Spa hoặc thử lại sau.', 'PAYMENT_NOT_CONFIGURED');
   }
   let booking;
-  transaction(() => {
-  const slot = assertSlot(body);
-  const pricing = holidaySales.price({ serviceId: body.serviceId, duration: slot.duration, serviceDate: body.date, promoCode: body.promoCode ?? '' });
+  await transaction(async () => {
+  const slot = await assertSlot(body);
+  const pricing = await holidaySales.price({ serviceId: body.serviceId, duration: slot.duration, serviceDate: body.date, promoCode: body.promoCode ?? '' });
   if (body.expectedFinalPrice !== undefined && body.expectedFinalPrice !== pricing.finalPrice) {
     throw new HttpError(409, 'Giá đã thay đổi. Vui lòng xem lại giá và xác nhận đặt lịch.', 'PRICE_CHANGED');
   }
-  const promo = pricing.promoCode ? parseRows('promotions').find((row) => row.code === pricing.promoCode) : null;
+  const promo = pricing.promoCode ? (await parseRows('promotions')).find((row) => row.code === pricing.promoCode) : null;
   const createdAt = new Date().toISOString();
   const paymentExpiresAt = new Date(Date.now() + 180 * 1000).toISOString();
   booking = {
@@ -813,47 +832,47 @@ async function createBookingForActor(body, actor) {
     note, serviceId: slot.service.id, serviceName: slot.service.name,
     duration: slot.duration, staffId: slot.staff.id, staffName: slot.staff.name, roomNumber: slot.roomNumber, date: body.date, startTime: slot.startTime, endTime: slot.endTime,
     status: 'Pending', paymentStatus: 'awaiting_payment', paymentMethod: 'bank',
-    paymentCode: createPaymentCode(parseRows('bookings')), paymentExpiresAt,
+    paymentCode: createPaymentCode(await parseRows('bookings')), paymentExpiresAt,
     promoCode: pricing.promoCode, originalPrice: pricing.originalPrice, discountAmount: pricing.discountAmount,
     finalPrice: pricing.finalPrice, pricingSnapshot: pricing, couponRedemptions: promo ? [promo.id] : [],
     paymentRecords: [], statusHistory: [{ status: 'Pending', at: new Date().toISOString(), by: actor.id }],
     createdAt, updatedAt: createdAt,
   };
-    saveRecord('bookings', booking);
-    db.prepare('INSERT INTO booking_dedupe(token, booking_id) VALUES (?, ?)').run(dedupe, booking.id);
-    if (promo) { const updatedPromo = { ...promo, usedCount: Number(promo.usedCount || 0) + 1 }; saveRecord('promotions', updatedPromo); nextVersion('promotions'); }
-    nextVersion('bookings');
-    withAudit(actor, 'booking.created', booking.id, { status: booking.status });
-  });
+    await saveRecord('bookings', booking);
+    await db.prepare('INSERT INTO booking_dedupe(token, booking_id) VALUES (?, ?)').run(dedupe, booking.id);
+    if (promo) { const updatedPromo = { ...promo, usedCount: Number(promo.usedCount || 0) + 1 }; await saveRecord('promotions', updatedPromo); await nextVersion('promotions'); }
+    await nextVersion('bookings');
+    await withAudit(actor, 'booking.created', booking.id, { status: booking.status });
+  }, { advisoryLock: { namespace: 'booking-date', key: body.date } });
   await backupIfDue();
   return { booking, status: 201 };
 }
 
-function completeDueBookings() {
+async function completeDueBookings() {
   const now = businessNow();
   const nowMinute = absoluteMinute(now.date, fromMin(now.minutes));
-  const candidates = parseRows('bookings').filter((booking) => booking.status === 'CheckedIn'
+  const candidates = (await parseRows('bookings')).filter((booking) => booking.status === 'CheckedIn'
     && validDate(booking.date) && typeof booking.endTime === 'string' && timePattern.test(booking.endTime)
     && absoluteMinute(booking.date, booking.endTime) <= nowMinute);
   if (!candidates.length) return 0;
 
   const completedAt = new Date().toISOString();
   let completedCount = 0;
-  transaction(() => {
+  await transaction(async () => {
     for (const candidate of candidates) {
-      const booking = getRecord('bookings', candidate.id);
+      const booking = await getRecord('bookings', candidate.id);
       if (!booking || booking.status !== 'CheckedIn'
           || absoluteMinute(booking.date, booking.endTime) > nowMinute) continue;
       const updated = { ...booking, status: 'Completed', completedAt, updatedAt: completedAt,
         statusHistory: [...(booking.statusHistory || []), {
           status: 'Completed', at: completedAt, by: 'system', reason: 'Tự động hoàn tất sau giờ kết thúc liệu trình.'
         }] };
-      saveRecord('bookings', updated);
-      withAudit({ id: 'system', role: 'system' }, 'booking.completed', booking.id,
+      await saveRecord('bookings', updated);
+      await withAudit({ id: 'system', role: 'system' }, 'booking.completed', booking.id,
         { from: 'CheckedIn', to: 'Completed', reason: 'service_end_time_reached' });
       completedCount += 1;
     }
-    if (completedCount) nextVersion('bookings');
+    if (completedCount) await nextVersion('bookings');
   });
   return completedCount;
 }
@@ -867,30 +886,30 @@ function cookieValue(request, key) {
   }
   return '';
 }
-function actorFrom(request) {
+async function actorFrom(request) {
   const token = cookieValue(request, 'serenity.sid');
   if (!token) return null;
   const tokenHash = createHash('sha256').update(token).digest('hex');
-  const stored = q.sessionByHash.get(tokenHash);
+  const stored = await q.sessionByHash.get(tokenHash);
   if (!stored || stored.expires_at <= Date.now()) {
-    if (stored) q.deleteSession.run(tokenHash);
+    if (stored) await q.deleteSession.run(tokenHash);
     return null;
   }
-  const user = getRecord('users', stored.user_id);
+  const user = await getRecord('users', stored.user_id);
   if (!user || user.active === false) {
-    q.deleteSession.run(tokenHash);
+    await q.deleteSession.run(tokenHash);
     return null;
   }
   return user && user.active !== false ? safeUser(user) : null;
 }
-function createSession(userId, response) {
+async function createSession(userId, response) {
   const token = randomBytes(32).toString('base64url');
   const tokenHash = createHash('sha256').update(token).digest('hex');
-  q.insertSession.run(tokenHash, userId, Date.now() + SESSION_TTL_MS);
+  await q.insertSession.run(tokenHash, userId, Date.now() + SESSION_TTL_MS);
   setSessionCookie(response, token);
 }
-function requireActor(request, roles = []) {
-  const actor = actorFrom(request);
+async function requireActor(request, roles = []) {
+  const actor = await actorFrom(request);
   if (!actor) throw new HttpError(401, 'Vui lòng đăng nhập để tiếp tục.', 'UNAUTHORIZED');
   if (roles.length && !roles.includes(actor.role)) throw new HttpError(403, 'Tài khoản không có quyền thực hiện thao tác này.', 'FORBIDDEN');
   return actor;
@@ -962,8 +981,8 @@ function hasMp3Signature(bytes) {
   if (bytes.toString('ascii', 0, 3) === 'ID3') return true;
   return bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0 && (bytes[1] & 0x18) !== 0x08 && (bytes[1] & 0x06) !== 0;
 }
-function readMusicJson(key, fallback) {
-  const raw = q.meta.get(key)?.value;
+async function readMusicJson(key, fallback) {
+  const raw = (await q.meta.get(key))?.value;
   if (!raw) return fallback;
   try { return JSON.parse(raw); } catch { return fallback; }
 }
@@ -993,7 +1012,7 @@ async function getMusicLibrary() {
     if (error.code !== 'ENOENT') throw error;
   }
 
-  const uploadedRecords = readMusicJson('music_uploaded_tracks_v1', []);
+  const uploadedRecords = await readMusicJson('music_uploaded_tracks_v1', []);
   const uploaded = [];
   for (const track of Array.isArray(uploadedRecords) ? uploadedRecords : []) {
     if (!track || typeof track.id !== 'string' || typeof track.storageName !== 'string') continue;
@@ -1014,11 +1033,11 @@ async function getMusicLibrary() {
 
   const tracks = [...bundled, ...uploaded];
   const validIds = new Set(tracks.map((track) => track.id));
-  const savedPlaylist = readMusicJson('music_playlist_ids_v1', null);
+  const savedPlaylist = await readMusicJson('music_playlist_ids_v1', null);
   const playlistIds = Array.isArray(savedPlaylist)
     ? savedPlaylist.filter((id, index, list) => typeof id === 'string' && validIds.has(id) && list.indexOf(id) === index)
     : tracks.map((track) => track.id);
-  const revision = Number(q.meta.get('music_playlist_revision_v1')?.value) || 0;
+  const revision = Number((await q.meta.get('music_playlist_revision_v1'))?.value) || 0;
   return { tracks, playlistIds, revision };
 }
 function assertOrigin(request) {
@@ -1026,23 +1045,23 @@ function assertOrigin(request) {
   if (!origin) return;
   if (!isAllowedOrigin(origin, request)) throw new HttpError(403, 'Nguồn gửi yêu cầu không được cho phép.', 'ORIGIN_REJECTED');
 }
-function collectionSnapshot(actor) {
-  const all = Object.fromEntries(Object.keys(repos).map((name) => [name, parseRows(name)]));
+async function collectionSnapshot(actor) {
+  const all = Object.fromEntries(await Promise.all(Object.keys(repos).map(async (name) => [name, await parseRows(name)])));
   const records = all.bookings || [];
   all.bookings = actor?.role === 'admin' ? records
     : actor?.role === 'staff' ? records.filter((row) => row.staffId === actor.staffId).map((row) => visibleBooking(row, actor))
       : actor?.role === 'customer' ? records.filter((row) => row.userId === actor.id).map(visibleCustomerBooking) : [];
-  all.users = actor?.role === 'admin' ? (all.users || []).map(safeUser) : actor ? [safeUser(getRecord('users', actor.id))].filter(Boolean) : [];
+  all.users = actor?.role === 'admin' ? (all.users || []).map(safeUser) : actor ? [safeUser(await getRecord('users', actor.id))].filter(Boolean) : [];
   all.contacts = actor?.role === 'admin' ? all.contacts : [];
   all.favorites = actor?.role === 'customer' ? (all.favorites || []).filter((row) => row.userId === actor.id) : [];
   all.reviews = (all.reviews || []).filter((row) => row.status === 'visible' || actor?.role === 'admin');
   const now = businessNow();
   return {
     collections: all,
-    holidaySales: holidaySales.list({ publicOnly: actor?.role !== 'admin' }),
-    siteContent: siteContent.list({ publicOnly: actor?.role !== 'admin' }),
+    holidaySales: await holidaySales.list({ publicOnly: actor?.role !== 'admin' }),
+    siteContent: await siteContent.list({ publicOnly: actor?.role !== 'admin' }),
     currentUser: actor,
-    versions: Object.fromEntries([...ADMIN_COLLECTIONS, 'holidaySales', 'siteContent'].map((name) => [name, versionOf(name)])),
+    versions: Object.fromEntries(await Promise.all([...ADMIN_COLLECTIONS, 'holidaySales', 'siteContent'].map(async (name) => [name, await versionOf(name)]))),
     occupiedSlots: records.filter((row) => bookingOccupiesSlot(row) && row.date >= now.date)
       .map(({ id, staffId, roomNumber, date, startTime, endTime, duration, status }) => ({ id, staffId, roomNumber, date, startTime, endTime, duration, status })),
   };
@@ -1087,21 +1106,21 @@ function managerRescheduleReply(quotes) {
   return ['Đã chuẩn bị báo giá từ máy chủ. Lịch hẹn chưa thay đổi. Hãy xem báo giá bên dưới và bấm Xác nhận thay đổi giá để lưu.', ...details].join('\n\n');
 }
 
-function managerBookingByRef(reference) {
+async function managerBookingByRef(reference) {
   const ref = String(reference || '').trim().toLocaleLowerCase('vi');
   if (!ref) throw new HttpError(400, 'Cần mã đặt lịch hoặc ID lịch hẹn.', 'BOOKING_REFERENCE_REQUIRED');
-  const matches = parseRows('bookings').filter((booking) =>
+  const matches = (await parseRows('bookings')).filter((booking) =>
     String(booking.code || '').toLocaleLowerCase('vi') === ref || String(booking.id || '').toLocaleLowerCase('vi') === ref);
   if (!matches.length) throw new HttpError(404, 'Không tìm thấy lịch hẹn theo mã hoặc ID đó.', 'NOT_FOUND');
   if (matches.length > 1) throw new HttpError(409, 'Mã tham chiếu khớp nhiều lịch. Hãy dùng mã đặt lịch đầy đủ.', 'BOOKING_REFERENCE_AMBIGUOUS');
   return matches[0];
 }
 
-function managerListBookings({ date, status, query }) {
+async function managerListBookings({ date, status, query }) {
   if (date && !validDate(String(date))) throw new HttpError(400, 'Ngày lọc phải theo định dạng YYYY-MM-DD.', 'INVALID_DATE');
   if (status && !STATUSES.has(String(status))) throw new HttpError(400, 'Trạng thái lọc không hợp lệ.', 'STATUS_INVALID');
   const search = String(query || '').trim().toLocaleLowerCase('vi').slice(0, 100);
-  const matching = parseRows('bookings').filter((booking) => {
+  const matching = (await parseRows('bookings')).filter((booking) => {
     if (date && booking.date !== date) return false;
     if (status && booking.status !== status) return false;
     if (search && ![booking.code, booking.customerName, booking.serviceName, booking.staffName]
@@ -1111,8 +1130,8 @@ function managerListBookings({ date, status, query }) {
   return { total: matching.length, bookings: matching.slice(0, 15).map(managerBookingSummary), truncated: matching.length > 15 };
 }
 
-function managerListBookableServices({ query }) {
-  const allServices = parseRows('services').map(normalizeServiceRecord);
+async function managerListBookableServices({ query }) {
+  const allServices = (await parseRows('services')).map(normalizeServiceRecord);
   const search = String(query || '').trim().toLocaleLowerCase('vi').slice(0, 100);
   const services = allServices.filter((service) => service.active !== false && isServiceBookable(service, allServices)
     && (!search || [service.id, service.name, service.category, service.categoryName]
@@ -1129,10 +1148,10 @@ function managerListBookableServices({ query }) {
   return { count: services.length, services };
 }
 
-function managerListActiveSpecialists({ serviceId }) {
-  const service = serviceId ? normalizeServiceRecord(getRecord('services', String(serviceId))) : null;
+async function managerListActiveSpecialists({ serviceId }) {
+  const service = serviceId ? normalizeServiceRecord(await getRecord('services', String(serviceId))) : null;
   if (serviceId && !service) throw new HttpError(404, 'Không tìm thấy liệu trình.', 'SERVICE_INVALID');
-  const staff = parseRows('staff').filter((member) => member.active !== false
+  const staff = (await parseRows('staff')).filter((member) => member.active !== false
     && (!service || !Array.isArray(member.specialties) || member.specialties.includes(service.category)))
     .map((member) => ({
       id: member.id,
@@ -1146,10 +1165,10 @@ function managerListActiveSpecialists({ serviceId }) {
   return { count: staff.length, specialists: staff };
 }
 
-function managerCheckBookingSlot({ serviceId, duration, staffId, date, startTime }) {
-  const slot = assertSlot({ serviceId: String(serviceId || ''), duration: Number(duration), staffId: String(staffId || ''),
+async function managerCheckBookingSlot({ serviceId, duration, staffId, date, startTime }) {
+  const slot = await assertSlot({ serviceId: String(serviceId || ''), duration: Number(duration), staffId: String(staffId || ''),
     date: String(date || ''), startTime: String(startTime || '') });
-  const pricing = holidaySales.price({ serviceId: slot.service.id, duration: slot.duration, serviceDate: date });
+  const pricing = await holidaySales.price({ serviceId: slot.service.id, duration: slot.duration, serviceDate: date });
   return { available: true, serviceName: slot.service.name, specialist: slot.staff.name, date, startTime: slot.startTime,
     endTime: slot.endTime, duration: slot.duration, price: pricing.finalPrice, pricing, roomNumber: slot.roomNumber };
 }
@@ -1183,7 +1202,7 @@ async function managerCreateBooking(args, actor, context) {
 }
 
 async function managerUpdateBookingStatus({ bookingRef, status, reason }, actor) {
-  const booking = managerBookingByRef(bookingRef);
+  const booking = await managerBookingByRef(bookingRef);
   const nextStatus = String(status || '');
   if (!STATUSES.has(nextStatus)) throw new HttpError(400, 'Trạng thái lịch không hợp lệ.', 'STATUS_INVALID');
   const transitions = { Pending: ['Confirmed', 'Cancelled'], Confirmed: ['CheckedIn', 'Cancelled', 'NoShow'], CheckedIn: ['Completed'], Completed: [], Cancelled: [], NoShow: [] };
@@ -1207,75 +1226,76 @@ async function managerUpdateBookingStatus({ bookingRef, status, reason }, actor)
     ...(nextStatus === 'CheckedIn' ? { checkedInAt: now } : {}),
     ...(nextStatus === 'NoShow' ? { noShowAt: now } : {}),
   };
-  transaction(() => {
-    saveRecord('bookings', updated);
-    nextVersion('bookings');
-    withAudit(actor, `booking.${nextStatus.toLowerCase()}`, booking.id, { from: booking.status, to: nextStatus, reason: reasonText });
+  await transaction(async () => {
+    await saveRecord('bookings', updated);
+    await nextVersion('bookings');
+    await withAudit(actor, `booking.${nextStatus.toLowerCase()}`, booking.id, { from: booking.status, to: nextStatus, reason: reasonText });
   });
   await backupIfDue();
   return { ok: true, booking: managerBookingSummary(updated) };
 }
 
-function recordAgentEffect(context, actor, field, value) {
+async function recordAgentEffect(context, actor, field, value) {
   context[field].push(value);
-  agentHistory.recordEffects(actor.id, context.conversationId, context.requestId, context);
+  await agentHistory.recordEffects(actor.id, context.conversationId, context.requestId, context);
 }
 
-function executeManagerBookingTool(name, args, actor, context) {
-  if (name === 'list_sale_targets') return { categories: parseRows('categories').map(({ id, name }) => ({ id, name })), services: managerListBookableServices({}) };
-  if (name === 'list_holiday_sales') return holidaySales.list({ query: args.query });
-  if (name === 'preview_service_price') return holidaySales.price({ serviceId: args.service_id, duration: args.duration, serviceDate: args.service_date });
+async function executeManagerBookingTool(name, args, actor, context) {
+  if (name === 'list_sale_targets') return { categories: (await parseRows('categories')).map(({ id, name }) => ({ id, name })), services: await managerListBookableServices({}) };
+  if (name === 'list_holiday_sales') return await holidaySales.list({ query: args.query });
+  if (name === 'preview_service_price') return await holidaySales.price({ serviceId: args.service_id, duration: args.duration, serviceDate: args.service_date });
   if (name === 'list_site_content') {
-    const content = siteContent.list();
+    const content = await siteContent.list();
     const query = String(args.query || '').trim().toLocaleLowerCase('vi');
     if (!query) return content;
     return { pages: content.pages.filter((page) => `${page.id} ${page.slug} ${page.title}`.toLocaleLowerCase('vi').includes(query)),
       menuItems: content.menuItems.filter((item) => `${item.id} ${item.label} ${item.targetHref}`.toLocaleLowerCase('vi').includes(query)) };
   }
   if (name === 'list_navigation_targets') {
+    const content = await siteContent.list();
     return { routes: Object.entries(SITE_MENU_ROUTES).map(([key, route]) => ({ routeKey: key, ...route })),
-      pages: siteContent.list().pages.map(({ id, slug, title, status, revision }) => ({ id, slug, title, status, revision, href: `#/pages/${slug}` })),
-      menuItems: siteContent.list().menuItems };
+      pages: content.pages.map(({ id, slug, title, status, revision }) => ({ id, slug, title, status, revision, href: `#/pages/${slug}` })),
+      menuItems: content.menuItems };
   }
   const siteRequestId = createHash('sha256').update(JSON.stringify([context.requestId, name, args], (_key, value) => value && typeof value === 'object' && !Array.isArray(value)
     ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, value[key]])) : value)).digest('hex');
   if (name === 'create_promotion_page') {
-    const result = siteContent.createPromotionPage(args, actor, { requestId: siteRequestId });
-    recordAgentEffect(context, actor, 'siteChanges', { type: 'promotion_page_created', ...result });
+    const result = await siteContent.createPromotionPage(args, actor, { requestId: siteRequestId });
+    await recordAgentEffect(context, actor, 'siteChanges', { type: 'promotion_page_created', ...result });
     return result;
   }
   if (name === 'update_promotion_page') {
-    const result = siteContent.updatePromotionPage(args.page_id, args.patch, actor,
+    const result = await siteContent.updatePromotionPage(args.page_id, args.patch, actor,
       { expectedRevision: args.expected_revision, requestId: siteRequestId });
-    recordAgentEffect(context, actor, 'siteChanges', { type: 'promotion_page_updated', ...result });
+    await recordAgentEffect(context, actor, 'siteChanges', { type: 'promotion_page_updated', ...result });
     return result;
   }
   if (name === 'create_menu_link') {
-    const result = siteContent.createMenuLink({ label: args.label, routeKey: args.route_key, enabled: args.enabled }, actor, { requestId: siteRequestId });
-    recordAgentEffect(context, actor, 'siteChanges', { type: 'menu_link_created', ...result });
+    const result = await siteContent.createMenuLink({ label: args.label, routeKey: args.route_key, enabled: args.enabled }, actor, { requestId: siteRequestId });
+    await recordAgentEffect(context, actor, 'siteChanges', { type: 'menu_link_created', ...result });
     return result;
   }
   if (name === 'update_menu_link') {
-    const result = siteContent.updateMenuLink(args.menu_id, args.patch, actor,
+    const result = await siteContent.updateMenuLink(args.menu_id, args.patch, actor,
       { expectedRevision: args.expected_revision, requestId: siteRequestId });
-    recordAgentEffect(context, actor, 'siteChanges', { type: 'menu_link_updated', ...result });
+    await recordAgentEffect(context, actor, 'siteChanges', { type: 'menu_link_updated', ...result });
     return result;
   }
   if (name === 'create_holiday_sale' || name === 'update_holiday_sale') {
     const patch = args.clear_max_discount ? { ...args.patch, maxDiscountVnd: null } : args.patch;
     const encoded = JSON.stringify([context.requestId, name, args], (_key, value) => value && typeof value === 'object' && !Array.isArray(value)
       ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, value[key]])) : value);
-    const result = holidaySales.save(args.sale || patch, actor, { id: args.campaign_id || null,
+    const result = await holidaySales.save(args.sale || patch, actor, { id: args.campaign_id || null,
       expectedRevision: args.expected_revision ?? 0,
       requestId: createHash('sha256').update(encoded).digest('hex') });
-    recordAgentEffect(context, actor, 'actions', { type: 'holiday_sale', ...result });
+    await recordAgentEffect(context, actor, 'actions', { type: 'holiday_sale', ...result });
     return result;
   }
-  if (name === 'list_bookings') return managerListBookings({ date: args.date, status: args.status, query: args.query });
-  if (name === 'get_booking') return managerBookingSummary(managerBookingByRef(args.booking_ref));
-  if (name === 'list_bookable_services') return managerListBookableServices({ query: args.query });
-  if (name === 'list_active_specialists') return managerListActiveSpecialists({ serviceId: args.service_id });
-  if (name === 'check_booking_slot') return managerCheckBookingSlot({
+  if (name === 'list_bookings') return await managerListBookings({ date: args.date, status: args.status, query: args.query });
+  if (name === 'get_booking') return managerBookingSummary(await managerBookingByRef(args.booking_ref));
+  if (name === 'list_bookable_services') return await managerListBookableServices({ query: args.query });
+  if (name === 'list_active_specialists') return await managerListActiveSpecialists({ serviceId: args.service_id });
+  if (name === 'check_booking_slot') return await managerCheckBookingSlot({
     serviceId: args.service_id, duration: args.duration, staffId: args.staff_id, date: args.date, startTime: args.start_time,
   });
   if (name === 'create_booking') return managerCreateBooking(args, actor, context);
@@ -1283,18 +1303,19 @@ function executeManagerBookingTool(name, args, actor, context) {
     bookingRef: args.booking_ref, status: args.status, reason: args.reason,
   }, actor);
   if (name === 'quote_reschedule_booking' || name === 'reschedule_booking') {
-    const result = holidaySales.prepareReschedule(managerBookingByRef(args.booking_ref).id,
+    const booking = await managerBookingByRef(args.booking_ref);
+    const result = await holidaySales.prepareReschedule(booking.id,
       { date: args.date, startTime: args.start_time, staffId: args.staff_id, promoCode: args.promo_code ?? '' }, actor);
-    recordAgentEffect(context, actor, 'quotes', result.quote);
+    await recordAgentEffect(context, actor, 'quotes', result.quote);
     return result;
   }
   return { error: 'Unknown manager tool.' };
 }
 
-function executeAuditorBookingTool(name, args) {
-  if (name === 'verify_holiday_sales') return holidaySales.list({ query: args.query });
-  if (name === 'verify_list_bookings') return managerListBookings({ date: args.date, status: args.status, query: args.query });
-  if (name === 'verify_get_booking') return managerBookingSummary(managerBookingByRef(args.booking_ref));
+async function executeAuditorBookingTool(name, args) {
+  if (name === 'verify_holiday_sales') return await holidaySales.list({ query: args.query });
+  if (name === 'verify_list_bookings') return await managerListBookings({ date: args.date, status: args.status, query: args.query });
+  if (name === 'verify_get_booking') return managerBookingSummary(await managerBookingByRef(args.booking_ref));
   return { error: 'Unknown auditor tool.' };
 }
 
@@ -1344,13 +1365,13 @@ function chatIdentity(request, response, actor) {
   return { userId: actor?.id || null, guestHash, rateKey: actor?.id ? `user:${actor.id}` : `guest:${guestHash}` };
 }
 
-function findChatConversation(identity, now = Date.now()) {
+async function findChatConversation(identity, now = Date.now()) {
   return identity.userId
-    ? q.chatConversationForUser.get(identity.userId, now)
-    : q.chatConversationForGuest.get(identity.guestHash, now);
+    ? await q.chatConversationForUser.get(identity.userId, now)
+    : await q.chatConversationForGuest.get(identity.guestHash, now);
 }
 
-function chatMessageView(row, actor) {
+async function chatMessageView(row, actor) {
   const metadata = JSON.parse(row.metadata || '{}');
   const message = {
     id: row.id, role: row.role, type: row.message_type, text: row.content,
@@ -1360,9 +1381,9 @@ function chatMessageView(row, actor) {
     services: [], bookings: [], createdAt: row.created_at,
   };
   if (Array.isArray(metadata.serviceRefs)) {
-    const allServices = parseRows('services').map(normalizeServiceRecord);
+    const allServices = (await parseRows('services')).map(normalizeServiceRecord);
     const activeServices = new Map(allServices.filter((service) => isServiceBookable(service, allServices)).map((service) => [service.id, service]));
-    message.services = metadata.serviceRefs.map((reference) => {
+    message.services = (await Promise.all(metadata.serviceRefs.map(async (reference) => {
       const service = activeServices.get(reference.serviceId);
       if (!service) return null;
       const duration = Number(reference.duration);
@@ -1370,15 +1391,15 @@ function chatMessageView(row, actor) {
         .find((item) => Number(item.duration) === duration);
       if (!variant) return null;
       const serviceDate = validDate(metadata.pricingServiceDate) ? metadata.pricingServiceDate : businessNow().date;
-      const pricing = holidaySales.price({ serviceId: service.id, duration: Number(variant.duration), serviceDate });
+      const pricing = await holidaySales.price({ serviceId: service.id, duration: Number(variant.duration), serviceDate });
       return { id: service.id, name: service.name, kind: service.kind, category: service.category,
         imageId: service.imageId || null, ...(service.imageUrl ? { imageUrl: service.imageUrl } : {}),
         shortDesc: String(service.shortDesc || '').slice(0, 240), categoryName: service.categoryName || service.category,
         price: pricing.finalPrice, originalPrice: pricing.originalPrice, pricing, serviceDate, duration: Number(variant.duration) };
-    }).filter(Boolean);
+    }))).filter(Boolean);
   }
   if (Array.isArray(metadata.bookingRefs) && actor?.role === 'customer') {
-    message.bookings = metadata.bookingRefs.map((id) => getRecord('bookings', id))
+    message.bookings = (await Promise.all(metadata.bookingRefs.map((id) => getRecord('bookings', id))))
       .filter((booking) => booking && booking.userId === actor.id)
       .map((booking) => ({ id: booking.id, code: booking.code, serviceName: booking.serviceName,
         date: booking.date, startTime: booking.startTime, status: booking.status }));
@@ -1386,11 +1407,11 @@ function chatMessageView(row, actor) {
   return message;
 }
 
-function chatMessagesFor(conversationId, actor) {
-  return q.chatMessages.all(conversationId, 80).reverse().map((row) => chatMessageView(row, actor));
+async function chatMessagesFor(conversationId, actor) {
+  return Promise.all((await q.chatMessages.all(conversationId, 80)).reverse().map((row) => chatMessageView(row, actor)));
 }
 
-function persistChatMessage(conversationId, role, type, content, metadata = {}) {
+async function persistChatMessage(conversationId, role, type, content, metadata = {}) {
   const safeMetadata = {
     pricingServiceDate: validDate(metadata.pricingServiceDate) ? metadata.pricingServiceDate : null,
     quickReplies: Array.isArray(metadata.quickReplies) ? metadata.quickReplies.slice(0, 8).map(({ label, value }) => ({
@@ -1409,11 +1430,11 @@ function persistChatMessage(conversationId, role, type, content, metadata = {}) 
   const row = { id: `chat_${randomUUID()}`, conversation_id: conversationId, role,
     message_type: String(type || 'text').slice(0, 40), content: String(content || '').slice(0, 1600),
     metadata: JSON.stringify(safeMetadata), created_at: createdAt };
-  q.insertChatMessage.run(row.id, row.conversation_id, row.role, row.message_type, row.content, row.metadata, row.created_at);
+  await q.insertChatMessage.run(row.id, row.conversation_id, row.role, row.message_type, row.content, row.metadata, row.created_at);
   return row;
 }
 
-function createChatConversation(identity) {
+async function createChatConversation(identity) {
   const now = Date.now();
   const timestamp = new Date(now).toISOString();
   const id = `chat_${randomUUID()}`;
@@ -1425,12 +1446,12 @@ function createChatConversation(identity) {
       { label: 'Massage body', value: 'Massage body' }, { label: 'Tư vấn thêm', value: 'Tư vấn thêm' },
     ] }), created_at: timestamp,
   };
-  transaction(() => {
-    q.insertChatConversation.run(id, identity.userId, identity.userId ? null : identity.guestHash,
+  await transaction(async () => {
+    await q.insertChatConversation.run(id, identity.userId, identity.userId ? null : identity.guestHash,
       JSON.stringify(emptyChatContext()), 'active', timestamp, timestamp, now + CHAT_TTL_MS);
-    q.insertChatMessage.run(greeting.id, id, greeting.role, greeting.message_type, greeting.content, greeting.metadata, greeting.created_at);
+    await q.insertChatMessage.run(greeting.id, id, greeting.role, greeting.message_type, greeting.content, greeting.metadata, greeting.created_at);
   });
-  return q.chatConversationById.get(id);
+  return await q.chatConversationById.get(id);
 }
 
 function ownsChatConversation(conversation, identity, now = Date.now()) {
@@ -1445,21 +1466,21 @@ function businessDatePlus(days = 0) {
   return date.toISOString().slice(0, 10);
 }
 
-function availableChatSlots(service, date, duration) {
-  const settings = getRecord('settings', 'main') || {};
+async function availableChatSlots(service, date, duration) {
+  const settings = await getRecord('settings', 'main') || {};
   const step = Number(settings.slotStep || 30);
   if (![15, 30, 60].includes(step)) return [];
   const openMinute = minOf(settings.openTime || '10:00');
   const closeMinute = minOf(settings.closeTime || '22:15');
   const slots = [];
-  for (const staff of parseRows('staff').filter((person) => person.active !== false)) {
+  for (const staff of (await parseRows('staff')).filter((person) => person.active !== false)) {
     if (Array.isArray(staff.specialties) && !staff.specialties.includes(service.category)) continue;
     const start = Math.max(openMinute, minOf(staff.shiftStart || '10:00'));
     const end = Math.min(closeMinute, minOf(staff.shiftEnd || '22:00'));
     for (let minute = start; minute + duration <= end; minute += step) {
       const startTime = fromMin(minute);
       try {
-        const result = assertSlot({ serviceId: service.id, duration, staffId: staff.id, date, startTime });
+        const result = await assertSlot({ serviceId: service.id, duration, staffId: staff.id, date, startTime });
         slots.push({ date, startTime, staffId: result.staff.id, staffName: result.staff.name, duration: result.duration });
       } catch { /* A candidate rejected by the booking rules is not advertised. */ }
     }
@@ -1467,10 +1488,10 @@ function availableChatSlots(service, date, duration) {
   return slots.sort((a, b) => a.startTime.localeCompare(b.startTime) || a.staffName.localeCompare(b.staffName, 'vi'));
 }
 
-function serviceCard(service, context) {
-  const variants = [...(service.variants || []), { duration: service.duration, price: service.price }]
-    .map((variant) => ({ duration: Number(variant.duration), price: holidaySales.price({ serviceId: service.id,
-      duration: Number(variant.duration), serviceDate: context.preferred_date || businessNow().date }).finalPrice }))
+async function serviceCard(service, context) {
+  const variants = (await Promise.all([...(service.variants || []), { duration: service.duration, price: service.price }]
+    .map(async (variant) => ({ duration: Number(variant.duration), price: (await holidaySales.price({ serviceId: service.id,
+      duration: Number(variant.duration), serviceDate: context.preferred_date || businessNow().date })).finalPrice }))))
     .filter((variant) => Number.isInteger(variant.duration) && Number.isFinite(variant.price));
   const eligible = variants.filter((variant) =>
     (context.budget_min == null || variant.price >= context.budget_min) &&
@@ -1532,7 +1553,7 @@ async function buildChatReply(message, previousContext, actor, identity, service
   chatDebug('[AI] decision', { intent: aiCriteria?.intent || rules.intent, receivedReply: Boolean(aiCriteria?.assistant_reply) });
   const result = { type: 'text', text: '', quickReplies: [], actions: [], serviceRefs: [], bookingRefs: [] };
   const priceDate = context.preferred_date || businessNow().date;
-  const currentSales = holidaySales.list();
+  const currentSales = await holidaySales.list();
   const quoteFor = (service, duration) => calculateDomainPrice({ service, duration: Number(duration), serviceDate: priceDate,
     campaigns: currentSales, evaluatedAt: new Date().toISOString() });
   const activeServices = services.filter((service) => isServiceBookable(service, services)).map((service) => ({ ...service,
@@ -1556,7 +1577,7 @@ async function buildChatReply(message, previousContext, actor, identity, service
     result.text = 'Mình sẽ đưa bạn đến trang liên hệ của Serenity để gửi lời nhắn cho đội ngũ tư vấn.';
     result.actions = [{ label: 'Liên hệ Serenity Spa', href: '#/contact' }];
   } else if (context.intent === 'BUSINESS_HOURS' || context.intent === 'SPA_INFORMATION') {
-    const settings = getRecord('settings', 'main') || {};
+    const settings = await getRecord('settings', 'main') || {};
     const lines = [settings.spaName || 'Serenity Spa & Wellness'];
     if (settings.address) lines.push(`Địa chỉ: ${settings.address}`);
     if (settings.openTime && settings.closeTime) lines.push(`Giờ hoạt động: ${settings.openTime}–${settings.closeTime}`);
@@ -1566,7 +1587,7 @@ async function buildChatReply(message, previousContext, actor, identity, service
   } else if (context.intent === 'PROMOTION_INQUIRY') {
     const today = businessNow().date;
     chatDebug('[TOOL] searchPromotions', { date: today });
-    const promotions = parseRows('promotions').filter((promotion) => promotion.active === true
+    const promotions = (await parseRows('promotions')).filter((promotion) => promotion.active === true
       && (!promotion.startDate || promotion.startDate <= today)
       && validDate(promotion.expiresAt) && promotion.expiresAt >= today
       && !(Number(promotion.usageLimit) > 0 && Number(promotion.usedCount) >= Number(promotion.usageLimit)));
@@ -1583,7 +1604,7 @@ async function buildChatReply(message, previousContext, actor, identity, service
       result.text = 'Để bảo vệ thông tin cá nhân, bạn cần đăng nhập tài khoản khách hàng để xem lịch hẹn của mình.';
       result.actions = [{ label: 'Đăng nhập', href: '#/login' }];
     } else {
-      const bookings = parseRows('bookings').filter((booking) => booking.userId === actor.id)
+      const bookings = (await parseRows('bookings')).filter((booking) => booking.userId === actor.id)
         .sort((a, b) => `${a.date}${a.startTime}`.localeCompare(`${b.date}${b.startTime}`)).slice(-5).reverse();
       if (!bookings.length) result.text = 'Tài khoản của bạn hiện chưa có lịch hẹn nào.';
       else {
@@ -1609,7 +1630,7 @@ async function buildChatReply(message, previousContext, actor, identity, service
         result.serviceRefs = recommendations.map((service) => ({ serviceId: service.id, duration: service.duration }));
       }
     } else {
-      const card = serviceCard(chosenService, context);
+      const card = await serviceCard(chosenService, context);
       if ((context.budget_min != null || context.budget_max != null) && !card) {
         result.text = `Mức giá hiện tại của ${chosenService.name} nằm ngoài khoảng ngân sách bạn chọn. Mình có thể tìm dịch vụ khác phù hợp hơn.`;
         result.quickReplies = [{ label: 'Bỏ ngân sách', value: 'Bỏ ngân sách' }];
@@ -1635,7 +1656,7 @@ async function buildChatReply(message, previousContext, actor, identity, service
       const duration = variants.includes(Number(context.desired_duration)) ? Number(context.desired_duration) : Number(chosenService.duration);
       chatDebug('[TOOL] checkAvailability', { serviceId: chosenService.id, date: context.preferred_date,
         time: context.preferred_time, duration });
-      const available = availableChatSlots(chosenService, context.preferred_date, duration);
+      const available = await availableChatSlots(chosenService, context.preferred_date, duration);
       const matches = context.preferred_time ? available.filter((slot) => slot.startTime === context.preferred_time) : available;
       chatDebug('[TOOL RESULT] checkAvailability', { serviceId: chosenService.id, date: context.preferred_date, count: matches.length });
       if (context.preferred_time && !matches.length) {
@@ -1670,7 +1691,7 @@ async function buildChatReply(message, previousContext, actor, identity, service
       ? 'Hiện trợ lý AI đang gặp sự cố tạm thời. Bạn có thể thử lại sau một chút.'
       : 'Trợ lý AI chưa được cấu hình để trả lời câu hỏi này. Bạn có thể thử lại sau hoặc hỏi mình về dịch vụ Serenity Spa.';
   } else if (chosenService && ['SERVICE_DETAILS', 'PRICE_INQUIRY'].includes(context.intent)) {
-    const card = serviceCard(chosenService, context);
+      const card = await serviceCard(chosenService, context);
     if ((context.budget_max != null || context.budget_min != null) && !card) {
       result.text = `Mức giá hiện tại của ${chosenService.name} không nằm trong khoảng ngân sách bạn đã chọn. Mình có thể tìm lựa chọn khác phù hợp hơn.`;
     } else {
@@ -1728,26 +1749,28 @@ async function buildChatReply(message, previousContext, actor, identity, service
   return { context, reply: result, aiUsed, aiFailed: aiAttempted && !aiReply };
 }
 
-function createChatSession(request, response) {
-  const actor = actorFrom(request);
+async function createChatSession(request, response) {
+  const actor = await actorFrom(request);
   const identity = chatIdentity(request, response, actor);
-  q.expireChatConversations.run(Date.now());
-  let conversation = findChatConversation(identity);
-  if (!conversation) conversation = createChatConversation(identity);
+  await q.expireChatConversations.run(Date.now());
+  let conversation = await findChatConversation(identity);
+  if (!conversation) conversation = await createChatConversation(identity);
   return { actor, identity, conversation };
 }
 
 async function createBackup() {
-  const file = await createSqliteBackup(db, BACKUP_DIR);
+  if (db.isPostgres) throw new HttpError(501, 'PostgreSQL backup cần được quản lý từ Render.', 'BACKUP_UNSUPPORTED');
+  const file = await createSqliteBackup(db.raw, BACKUP_DIR);
   const snapshot = new DatabaseSync(file, { readOnly: true });
   try { assertSqliteIntegrity(snapshot); } finally { snapshot.close(); }
-  q.setMeta.run('last_backup_date', new Date().toISOString().slice(0, 10));
+  await q.setMeta.run('last_backup_date', new Date().toISOString().slice(0, 10));
   return file;
 }
 let backupInProgress = null;
 async function backupIfDue() {
+  if (db.isPostgres) return;
   const today = new Date().toISOString().slice(0, 10);
-  if (q.meta.get('last_backup_date')?.value !== today) {
+  if ((await q.meta.get('last_backup_date'))?.value !== today) {
     if (!backupInProgress) {
       backupInProgress = createBackup().finally(() => { backupInProgress = null; });
     }
@@ -1758,26 +1781,29 @@ async function backupIfDue() {
 async function routeApi(request, response, url) {
   const method = request.method || 'GET';
   const pathname = url.pathname;
-  if (method === 'GET' && pathname === '/api/health') return respond(response, 200, { ok: true, version: 1 });
+  if (method === 'GET' && (pathname === '/api/health' || pathname === '/api/ready')) {
+    try { await db.health(); return respond(response, 200, { ok: true, database: db.isPostgres ? 'postgres' : 'sqlite', version: 1 }); }
+    catch { return respond(response, 503, { ok: false, database: 'unavailable', version: 1 }); }
+  }
   if (method === 'GET' && pathname === '/api/payment/config') return respond(response, 200, { payment: publicPaymentConfig() });
   if (method === 'POST' && pathname === '/api/payments/sepay/webhook') {
     if (!paymentOperations.authenticateWebhook(request.headers.authorization)) {
       throw new HttpError(401, 'Webhook SePay chưa được xác thực.', 'SEPAY_WEBHOOK_UNAUTHORIZED');
     }
     const body = await readBody(request, 32 * 1024);
-    const result = paymentOperations.handleWebhook(body);
+    const result = await paymentOperations.handleWebhook(body);
     await backupIfDue();
     return respond(response, 200, result);
   }
   if (method === 'GET' && pathname === '/api/admin/payments/reconciliation') {
-    requireActor(request, ['admin']);
-    return respond(response, 200, paymentOperations.reconciliation());
+    await requireActor(request, ['admin']);
+    return respond(response, 200, await paymentOperations.reconciliation());
   }
   if (method === 'POST' && pathname === '/api/admin/payments/reconcile-unmatched') {
     assertOrigin(request);
-    const actor = requireActor(request, ['admin']);
+    const actor = await requireActor(request, ['admin']);
     const body = await readBody(request, 16 * 1024);
-    const updated = paymentOperations.linkUnmatchedTransaction({
+    const updated = await paymentOperations.linkUnmatchedTransaction({
       providerTransactionId: body.providerTransactionId,
       bookingId: body.bookingId,
       actor,
@@ -1787,9 +1813,9 @@ async function routeApi(request, response, url) {
   }
   if (method === 'POST' && pathname === '/api/admin/payments/issue-refund') {
     assertOrigin(request);
-    const actor = requireActor(request, ['admin']);
+    const actor = await requireActor(request, ['admin']);
     const body = await readBody(request, 16 * 1024);
-    const updated = paymentOperations.createIssueRefund({
+    const updated = await paymentOperations.createIssueRefund({
       providerTransactionId: body.providerTransactionId,
       amount: body.amount,
       recipient: body.recipient,
@@ -1802,16 +1828,16 @@ async function routeApi(request, response, url) {
   const refundCompleteRoute = pathname.match(/^\/api\/admin\/bookings\/([^/]+)\/refund-complete$/);
   if (method === 'POST' && refundCompleteRoute) {
     assertOrigin(request);
-    const actor = requireActor(request, ['admin']);
+    const actor = await requireActor(request, ['admin']);
     const id = decodeURIComponent(refundCompleteRoute[1]);
     const body = await readBody(request, 16 * 1024);
-    const booking = getRecord('bookings', id);
+    const booking = await getRecord('bookings', id);
     if (!booking) throw new HttpError(404, 'Không tìm thấy lịch hẹn.', 'NOT_FOUND');
-    const updated = paymentOperations.markRefundComplete(booking, { referenceCode: body.referenceCode, note: body.note, actor });
-    transaction(() => {
-      saveRecord('bookings', updated);
-      nextVersion('bookings');
-      withAudit(actor, 'booking.refund.completed', id, { amount: updated.refundRequest.amount,
+    const updated = await paymentOperations.markRefundComplete(booking, { referenceCode: body.referenceCode, note: body.note, actor });
+    await transaction(async () => {
+      await saveRecord('bookings', updated);
+      await nextVersion('bookings');
+      await withAudit(actor, 'booking.refund.completed', id, { amount: updated.refundRequest.amount,
         referenceCode: updated.refundRequest.referenceCode });
     });
     await backupIfDue();
@@ -1820,10 +1846,10 @@ async function routeApi(request, response, url) {
   const confirmTransferRoute = pathname.match(/^\/api\/admin\/bookings\/([^/]+)\/confirm-transfer$/);
   if (method === 'POST' && confirmTransferRoute) {
     assertOrigin(request);
-    const actor = requireActor(request, ['admin']);
+    const actor = await requireActor(request, ['admin']);
     const id = decodeURIComponent(confirmTransferRoute[1]);
     const body = await readBody(request, 16 * 1024).catch(() => ({}));
-    const booking = getRecord('bookings', id);
+    const booking = await getRecord('bookings', id);
     if (!booking) throw new HttpError(404, 'Không tìm thấy lịch hẹn.', 'NOT_FOUND');
     const now = new Date().toISOString();
     const amount = Number(body?.amount || booking.finalPrice || 0);
@@ -1861,17 +1887,17 @@ async function routeApi(request, response, url) {
       statusHistory: [...(booking.statusHistory || []), { status: 'Confirmed', at: now, by: actor.id, reason: 'Admin xác nhận đã nhận đủ tiền chuyển khoản VietQR.' }],
       updatedAt: now,
     };
-    transaction(() => {
-      saveRecord('bookings', updated);
-      nextVersion('bookings');
-      withAudit(actor, 'booking.payment.confirmed_manual', id, { amount, bookingCode: booking.code });
+    await transaction(async () => {
+      await saveRecord('bookings', updated);
+      await nextVersion('bookings');
+      await withAudit(actor, 'booking.payment.confirmed_manual', id, { amount, bookingCode: booking.code });
     });
     await backupIfDue();
     return respond(response, 200, { ok: true, booking: updated });
   }
   const packageImageId = pathname.match(/^\/api\/package-images\/([0-9a-f-]{36})$/i)?.[1];
   if (method === 'GET' && packageImageId) {
-    const image = q.packageImage.get(packageImageId);
+    const image = await q.packageImage.get(packageImageId);
     if (!image) throw new HttpError(404, 'Không tìm thấy ảnh gói trị liệu.', 'PACKAGE_IMAGE_NOT_FOUND');
     const bytes = Buffer.from(image.data);
     response.writeHead(200, {
@@ -1884,7 +1910,7 @@ async function routeApi(request, response, url) {
   }
   const therapyImageId = pathname.match(/^\/api\/therapy-images\/([0-9a-f-]{36})$/i)?.[1];
   if (method === 'GET' && therapyImageId) {
-    const image = q.therapyImage.get(therapyImageId);
+    const image = await q.therapyImage.get(therapyImageId);
     if (!image) throw new HttpError(404, 'Không tìm thấy ảnh liệu trình.', 'THERAPY_IMAGE_NOT_FOUND');
     const bytes = Buffer.from(image.data);
     response.writeHead(200, {
@@ -1897,7 +1923,7 @@ async function routeApi(request, response, url) {
   }
   if (method === 'POST' && pathname === '/api/admin/package-images') {
     assertOrigin(request);
-    const actor = requireActor(request, ['admin']);
+    const actor = await requireActor(request, ['admin']);
     const mimeType = String(request.headers['content-type'] || '').split(';', 1)[0].trim().toLowerCase();
     if (!['image/webp', 'image/jpeg', 'image/png'].includes(mimeType)) {
       throw new HttpError(415, 'Chỉ hỗ trợ ảnh JPG, PNG hoặc WebP.', 'PACKAGE_IMAGE_TYPE_INVALID');
@@ -1905,16 +1931,16 @@ async function routeApi(request, response, url) {
     const bytes = await readBinaryBody(request);
     if (!hasImageSignature(bytes, mimeType)) throw new HttpError(400, 'Nội dung tệp không khớp định dạng ảnh.', 'PACKAGE_IMAGE_INVALID');
     const id = randomUUID();
-    transaction(() => {
-      q.insertPackageImage.run(id, mimeType, bytes, new Date().toISOString());
-      withAudit(actor, 'package-image.uploaded', null, { imageId: id, mimeType, sizeBytes: bytes.length });
+    await transaction(async () => {
+      await q.insertPackageImage.run(id, mimeType, bytes, new Date().toISOString());
+      await withAudit(actor, 'package-image.uploaded', null, { imageId: id, mimeType, sizeBytes: bytes.length });
     });
     await backupIfDue();
     return respond(response, 201, { imageUrl: `/api/package-images/${id}` });
   }
   if (method === 'POST' && pathname === '/api/admin/therapy-images') {
     assertOrigin(request);
-    const actor = requireActor(request, ['admin']);
+    const actor = await requireActor(request, ['admin']);
     const mimeType = String(request.headers['content-type'] || '').split(';', 1)[0].trim().toLowerCase();
     if (!['image/webp', 'image/jpeg', 'image/png'].includes(mimeType)) {
       throw new HttpError(415, 'Chỉ hỗ trợ ảnh JPG, PNG hoặc WebP.', 'THERAPY_IMAGE_TYPE_INVALID');
@@ -1922,9 +1948,9 @@ async function routeApi(request, response, url) {
     const bytes = await readBinaryBody(request);
     if (!hasImageSignature(bytes, mimeType)) throw new HttpError(400, 'Nội dung tệp không khớp định dạng ảnh.', 'THERAPY_IMAGE_INVALID');
     const id = randomUUID();
-    transaction(() => {
-      q.insertTherapyImage.run(id, mimeType, bytes, new Date().toISOString());
-      withAudit(actor, 'therapy-image.uploaded', null, { imageId: id, mimeType, sizeBytes: bytes.length });
+    await transaction(async () => {
+      await q.insertTherapyImage.run(id, mimeType, bytes, new Date().toISOString());
+      await withAudit(actor, 'therapy-image.uploaded', null, { imageId: id, mimeType, sizeBytes: bytes.length });
     });
     await backupIfDue();
     return respond(response, 201, { imageUrl: `/api/therapy-images/${id}` });
@@ -1934,7 +1960,7 @@ async function routeApi(request, response, url) {
   }
   const uploadedMusicId = pathname.match(/^\/api\/music\/files\/(upload-[0-9a-f-]{36})$/i)?.[1];
   if ((method === 'GET' || method === 'HEAD') && uploadedMusicId) {
-    const uploaded = readMusicJson('music_uploaded_tracks_v1', []);
+    const uploaded = await readMusicJson('music_uploaded_tracks_v1', []);
     const track = (Array.isArray(uploaded) ? uploaded : []).find((item) => item?.id === uploadedMusicId);
     const file = track?.storageName ? path.resolve(MUSIC_DIRECTORY, track.storageName) : null;
     const fileInfo = file && file.startsWith(`${MUSIC_DIRECTORY}${path.sep}`) ? await stat(file).catch(() => null) : null;
@@ -1943,7 +1969,7 @@ async function routeApi(request, response, url) {
   }
   if (method === 'POST' && pathname === '/api/music/import') {
     assertOrigin(request);
-    const actor = requireActor(request, ['admin', 'staff']);
+    const actor = await requireActor(request, ['admin', 'staff']);
     const mimeType = String(request.headers['content-type'] || '').split(';', 1)[0].trim().toLowerCase();
     if (!['audio/mpeg', 'audio/mp3', 'application/octet-stream'].includes(mimeType)) {
       throw new HttpError(415, 'Chỉ hỗ trợ tệp MP3.', 'MUSIC_FILE_TYPE_INVALID');
@@ -1972,11 +1998,11 @@ async function routeApi(request, response, url) {
     const createdAt = new Date().toISOString();
     const record = { id, title, originalName: baseName, storageName, sizeBytes: bytes.length, createdAt, uploadedBy: actor.id };
     try {
-      transaction(() => {
-        const uploaded = readMusicJson('music_uploaded_tracks_v1', []);
+      await transaction(async () => {
+        const uploaded = await readMusicJson('music_uploaded_tracks_v1', []);
         const nextUploaded = [...(Array.isArray(uploaded) ? uploaded : []), record];
-        q.setMeta.run('music_uploaded_tracks_v1', JSON.stringify(nextUploaded));
-        withAudit(actor, 'music.imported', null, { trackId: id, title, sizeBytes: bytes.length });
+        await q.setMeta.run('music_uploaded_tracks_v1', JSON.stringify(nextUploaded));
+        await withAudit(actor, 'music.imported', null, { trackId: id, title, sizeBytes: bytes.length });
       });
     } catch (error) {
       await unlink(targetFile).catch(() => {});
@@ -1997,7 +2023,7 @@ async function routeApi(request, response, url) {
   }
   if (method === 'PUT' && pathname === '/api/music/playlist') {
     assertOrigin(request);
-    const actor = requireActor(request, ['admin', 'staff']);
+    const actor = await requireActor(request, ['admin', 'staff']);
     const body = await readBody(request, 64 * 1024);
     if (!Array.isArray(body.trackIds) || body.trackIds.length > 500 || body.trackIds.some((id) => typeof id !== 'string')) {
       throw new HttpError(400, 'Danh sách bài hát không hợp lệ.', 'MUSIC_PLAYLIST_INVALID');
@@ -2014,15 +2040,15 @@ async function routeApi(request, response, url) {
       if (!playlistIds.includes(id)) playlistIds.push(id);
     }
     let revision = library.revision;
-    transaction(() => {
-      const currentRevision = Number(q.meta.get('music_playlist_revision_v1')?.value) || 0;
+    await transaction(async () => {
+      const currentRevision = Number((await q.meta.get('music_playlist_revision_v1'))?.value) || 0;
       if (expected !== currentRevision) {
         throw new HttpError(409, 'Danh sách phát vừa được cập nhật ở thiết bị khác.', 'MUSIC_PLAYLIST_CONFLICT');
       }
       revision = currentRevision + 1;
-      q.setMeta.run('music_playlist_ids_v1', JSON.stringify(playlistIds));
-      q.setMeta.run('music_playlist_revision_v1', String(revision));
-      withAudit(actor, 'music.playlist.updated', null, { count: playlistIds.length, revision });
+      await q.setMeta.run('music_playlist_ids_v1', JSON.stringify(playlistIds));
+      await q.setMeta.run('music_playlist_revision_v1', String(revision));
+      await withAudit(actor, 'music.playlist.updated', null, { count: playlistIds.length, revision });
     });
     await backupIfDue();
     return respond(response, 200, { playlistIds, revision });
@@ -2030,8 +2056,8 @@ async function routeApi(request, response, url) {
   if (method === 'GET' && pathname === '/api/services') {
     try {
       return respond(response, 200, queryPublicServiceCatalog({
-        searchParams: url.searchParams, services: parseRows('services'), categories: parseRows('categories'),
-        campaigns: holidaySales.list({ publicOnly: true }), evaluatedAt: new Date().toISOString(),
+        searchParams: url.searchParams, services: await parseRows('services'), categories: await parseRows('categories'),
+        campaigns: await holidaySales.list({ publicOnly: true }), evaluatedAt: new Date().toISOString(),
       }));
     } catch (error) {
       if (error instanceof ServiceCatalogQueryError) throw new HttpError(400, error.message, error.code);
@@ -2041,102 +2067,102 @@ async function routeApi(request, response, url) {
   if (method === 'POST' && pathname === '/api/pricing/quote') {
     assertOrigin(request);
     const body = await readBody(request, 16 * 1024);
-    return respond(response, 200, { pricing: holidaySales.price(body) });
+    return respond(response, 200, { pricing: await holidaySales.price(body) });
   }
   if (pathname === '/api/admin/holiday-sales' && ['GET', 'POST'].includes(method)) {
-    const actor = requireActor(request, ['admin']);
-    if (method === 'GET') return respond(response, 200, { sales: holidaySales.list({ query: url.searchParams.get('q') || '' }) });
+    const actor = await requireActor(request, ['admin']);
+    if (method === 'GET') return respond(response, 200, { sales: await holidaySales.list({ query: url.searchParams.get('q') || '' }) });
     assertOrigin(request);
     const body = await readBody(request, 64 * 1024);
-    const result = holidaySales.save(body.sale, actor, { requestId: body.requestId });
+    const result = await holidaySales.save(body.sale, actor, { requestId: body.requestId });
     await backupIfDue();
     return respond(response, result.replayed ? 200 : 201, result);
   }
   const saleRoute = pathname.match(/^\/api\/admin\/holiday-sales\/([^/]+)$/);
   if (saleRoute && method === 'PATCH') {
     assertOrigin(request);
-    const actor = requireActor(request, ['admin']);
+    const actor = await requireActor(request, ['admin']);
     const body = await readBody(request, 64 * 1024);
-    const result = holidaySales.save(body.patch, actor, { id: decodeURIComponent(saleRoute[1]), expectedRevision: body.expectedRevision, requestId: body.requestId });
+    const result = await holidaySales.save(body.patch, actor, { id: decodeURIComponent(saleRoute[1]), expectedRevision: body.expectedRevision, requestId: body.requestId });
     await backupIfDue();
     return respond(response, 200, result);
   }
   if (method === 'GET' && pathname === '/api/admin/site-content') {
-    requireActor(request, ['admin']);
-    return respond(response, 200, siteContent.list());
+    await requireActor(request, ['admin']);
+    return respond(response, 200, await siteContent.list());
   }
   if (method === 'GET' && pathname.startsWith('/api/site-pages/')) {
     const slug = decodeURIComponent(pathname.slice('/api/site-pages/'.length));
-    const page = siteContent.getPage(slug, { publicOnly: true });
+    const page = await siteContent.getPage(slug, { publicOnly: true });
     if (!page) throw new HttpError(404, 'Không tìm thấy trang ưu đãi đang được xuất bản.', 'NOT_FOUND');
     return respond(response, 200, { page });
   }
   if (method === 'POST' && pathname === '/api/admin/site-pages/promotion') {
     assertOrigin(request);
-    const actor = requireActor(request, ['admin']);
+    const actor = await requireActor(request, ['admin']);
     const body = await readBody(request, 32 * 1024);
-    const result = siteContent.createPromotionPage(body.page, actor, { requestId: body.requestId });
+    const result = await siteContent.createPromotionPage(body.page, actor, { requestId: body.requestId });
     await backupIfDue();
     return respond(response, result.replayed ? 200 : 201, result);
   }
   const sitePageRoute = pathname.match(/^\/api\/admin\/site-pages\/([^/]+)$/);
   if (sitePageRoute && method === 'PATCH') {
     assertOrigin(request);
-    const actor = requireActor(request, ['admin']);
+    const actor = await requireActor(request, ['admin']);
     const body = await readBody(request, 32 * 1024);
-    const result = siteContent.updatePromotionPage(decodeURIComponent(sitePageRoute[1]), body.patch, actor,
+    const result = await siteContent.updatePromotionPage(decodeURIComponent(sitePageRoute[1]), body.patch, actor,
       { expectedRevision: body.expectedRevision, requestId: body.requestId });
     await backupIfDue();
     return respond(response, 200, result);
   }
   if (pathname === '/api/admin/site-menu' && method === 'POST') {
     assertOrigin(request);
-    const actor = requireActor(request, ['admin']);
+    const actor = await requireActor(request, ['admin']);
     const body = await readBody(request, 16 * 1024);
-    const result = siteContent.createMenuLink(body.menuItem, actor, { requestId: body.requestId });
+    const result = await siteContent.createMenuLink(body.menuItem, actor, { requestId: body.requestId });
     await backupIfDue();
     return respond(response, result.replayed ? 200 : 201, result);
   }
   const siteMenuRoute = pathname.match(/^\/api\/admin\/site-menu\/([^/]+)$/);
   if (siteMenuRoute && method === 'PATCH') {
     assertOrigin(request);
-    const actor = requireActor(request, ['admin']);
+    const actor = await requireActor(request, ['admin']);
     const body = await readBody(request, 16 * 1024);
-    const result = siteContent.updateMenuLink(decodeURIComponent(siteMenuRoute[1]), body.patch, actor,
+    const result = await siteContent.updateMenuLink(decodeURIComponent(siteMenuRoute[1]), body.patch, actor,
       { expectedRevision: body.expectedRevision, requestId: body.requestId });
     await backupIfDue();
     return respond(response, 200, result);
   }
   if (pathname === '/api/admin/agent/conversations' && ['GET', 'POST', 'DELETE'].includes(method)) {
-    const actor = requireActor(request, ['admin']);
-    if (method === 'GET') return respond(response, 200, { conversations: agentHistory.list(actor.id), retentionDays: AGENT_HISTORY_RETENTION_DAYS });
+    const actor = await requireActor(request, ['admin']);
+    if (method === 'GET') return respond(response, 200, { conversations: await agentHistory.list(actor.id), retentionDays: AGENT_HISTORY_RETENTION_DAYS });
     assertOrigin(request);
-    if (method === 'POST') return respond(response, 201, { conversation: agentHistory.create(actor.id) });
+    if (method === 'POST') return respond(response, 201, { conversation: await agentHistory.create(actor.id) });
     if ([...adminAgentPendingConversations].some((key) => key.startsWith(`${actor.id}:`))) {
       throw new HttpError(409, 'Có yêu cầu Agent đang xử lý. Hãy đợi hoàn tất trước khi xóa lịch sử.', 'CONVERSATION_BUSY');
     }
-    const result = agentHistory.remove(actor.id);
+    const result = await agentHistory.remove(actor.id);
     for (const key of adminAgentConversations.keys()) if (key.startsWith(`${actor.id}:`)) adminAgentConversations.delete(key);
     return respond(response, 200, result);
   }
   const agentConversationRoute = pathname.match(/^\/api\/admin\/agent\/conversations\/([a-zA-Z0-9_-]{12,80})$/);
   if (agentConversationRoute && ['GET', 'DELETE'].includes(method)) {
-    const actor = requireActor(request, ['admin']);
+    const actor = await requireActor(request, ['admin']);
     const id = agentConversationRoute[1];
     const memoryKey = `${actor.id}:${id}`;
     if (method === 'GET') {
       const before = url.searchParams.has('before') ? Number(url.searchParams.get('before')) : null;
-      return respond(response, 200, { ...agentHistory.read(actor.id, id, { before }), busy: adminAgentPendingConversations.has(memoryKey) });
+      return respond(response, 200, { ...await agentHistory.read(actor.id, id, { before }), busy: adminAgentPendingConversations.has(memoryKey) });
     }
     assertOrigin(request);
     if (adminAgentPendingConversations.has(memoryKey)) throw new HttpError(409, 'Hội thoại đang xử lý yêu cầu. Hãy đợi hoàn tất trước khi xóa.', 'CONVERSATION_BUSY');
-    const result = agentHistory.remove(actor.id, id);
+    const result = await agentHistory.remove(actor.id, id);
     adminAgentConversations.delete(memoryKey);
     return respond(response, 200, result);
   }
   if (method === 'POST' && pathname === '/api/admin/agent/messages') {
     assertOrigin(request);
-    const actor = requireActor(request, ['admin']);
+    const actor = await requireActor(request, ['admin']);
     const body = await readBody(request, 16 * 1024);
     const message = typeof body.message === 'string' ? body.message.trim() : '';
     const conversationId = String(body.conversationId || '');
@@ -2147,8 +2173,8 @@ async function routeApi(request, response, url) {
     const receiptKey = `admin-agent-request:${actor.id}:${requestId}`;
     const memoryKey = `${actor.id}:${conversationId}`;
     const messageHash = createHash('sha256').update(JSON.stringify([conversationId, message])).digest('hex');
-    agentHistory.prune();
-    const savedReceipt = q.meta.get(receiptKey);
+    await agentHistory.prune();
+    const savedReceipt = await q.meta.get(receiptKey);
     if (savedReceipt) {
       const receipt = JSON.parse(savedReceipt.value);
       if (receipt.messageHash !== messageHash) throw new HttpError(409, 'Mã yêu cầu đã dùng cho nội dung khác.', 'REQUEST_CONFLICT');
@@ -2158,11 +2184,11 @@ async function routeApi(request, response, url) {
     if (adminAgentPendingRequests.has(receiptKey)) throw new HttpError(409, 'Yêu cầu này vẫn đang xử lý. Vui lòng thử lại cùng nội dung.', 'REQUEST_IN_PROGRESS');
     if (adminAgentPendingConversations.has(memoryKey)) throw new HttpError(409, 'Hội thoại đang có yêu cầu xử lý. Hãy đợi kết quả trước khi gửi lệnh tiếp theo.', 'CONVERSATION_BUSY');
     enforceChatRateLimit(`${actor.id}:admin-agent`, Date.now(), 10);
-    agentHistory.begin(actor.id, conversationId, requestId, messageHash, message);
-    const rememberReceipt = (payload) => agentHistory.finish(actor.id, conversationId, requestId, messageHash,
+    await agentHistory.begin(actor.id, conversationId, requestId, messageHash, message);
+    const rememberReceipt = async (payload) => agentHistory.finish(actor.id, conversationId, requestId, messageHash,
       payload.quotes?.length ? { ...payload, reply: managerRescheduleReply(payload.quotes) } : payload);
     if (!isSpaManagerAgentConfigured(process.env)) {
-      agentHistory.markFailed(actor.id, requestId, 'Agent quản lý chưa được cấu hình AI trên máy chủ.', 'AI_NOT_CONFIGURED');
+      await agentHistory.markFailed(actor.id, requestId, 'Agent quản lý chưa được cấu hình AI trên máy chủ.', 'AI_NOT_CONFIGURED');
       throw new HttpError(503, 'Agent quản lý chưa được cấu hình AI trên máy chủ.', 'AI_NOT_CONFIGURED');
     }
     pruneAdminAgentConversations();
@@ -2196,13 +2222,13 @@ async function routeApi(request, response, url) {
     try {
       result = await runSpaManagerAgent({
         message: `Current business date in Asia/Ho_Chi_Minh: ${businessNow().date}. Use this date for relative dates such as tomorrow.\nAdmin request: ${safeMessage}`,
-        history: agentHistory.history(actor.id, conversationId),
-        executeManagerTool: (name, args) => executeManagerBookingTool(name, args, requireActor(request, ['admin']), agentContext),
+        history: await agentHistory.history(actor.id, conversationId),
+        executeManagerTool: async (name, args) => executeManagerBookingTool(name, args, await requireActor(request, ['admin']), agentContext),
         executeAuditorTool: executeAuditorBookingTool,
       });
     } catch (error) {
       if (agentContext.actions.length || agentContext.quotes.length || agentContext.siteChanges.length) {
-        return respond(response, 200, rememberReceipt({ reply: 'Máy chủ đã xử lý các mục bên dưới. AI chưa hoàn tất phần diễn giải; hãy kiểm tra kết quả đã xác minh và báo giá cần xác nhận.',
+        return respond(response, 200, await rememberReceipt({ reply: 'Máy chủ đã xử lý các mục bên dưới. AI chưa hoàn tất phần diễn giải; hãy kiểm tra kết quả đã xác minh và báo giá cần xác nhận.',
           conversationId, actions: agentContext.actions, quotes: agentContext.quotes, siteChanges: agentContext.siteChanges }));
       }
       const failures = {
@@ -2223,7 +2249,7 @@ async function routeApi(request, response, url) {
       };
       const code = Object.hasOwn(failures, error?.message) ? error.message : 'AGENT_UNAVAILABLE';
       const failure = new HttpError(503, failures[code] || 'Agent quản lý đang bận hoặc AI chưa phản hồi. Vui lòng thử lại.', code);
-      agentHistory.markFailed(actor.id, requestId, failure.message, code);
+      await agentHistory.markFailed(actor.id, requestId, failure.message, code);
       console.warn('[spa-manager-agent] request failed', code);
       throw failure;
     } finally {
@@ -2236,30 +2262,30 @@ async function routeApi(request, response, url) {
       updatedAt: Date.now(),
     });
     pruneAdminAgentConversations();
-    return respond(response, 200, rememberReceipt({ reply: result.reply, conversationId, actions: agentContext.actions, quotes: agentContext.quotes, siteChanges: agentContext.siteChanges }));
+    return respond(response, 200, await rememberReceipt({ reply: result.reply, conversationId, actions: agentContext.actions, quotes: agentContext.quotes, siteChanges: agentContext.siteChanges }));
   }
 
   if (method === 'GET' && pathname === '/api/chat/session') {
-    const { actor, conversation } = createChatSession(request, response);
+    const { actor, conversation } = await createChatSession(request, response);
     let context = emptyChatContext();
     try { context = JSON.parse(conversation.context || '{}'); } catch { /* A malformed legacy context resets safely. */ }
     return respond(response, 200, { conversationId: conversation.id, context,
-      messages: chatMessagesFor(conversation.id, actor), aiAvailable: chatAiAvailable() });
+      messages: await chatMessagesFor(conversation.id, actor), aiAvailable: chatAiAvailable() });
   }
   if (method === 'POST' && pathname === '/api/chat/reset') {
     assertOrigin(request);
-    const actor = actorFrom(request);
+    const actor = await actorFrom(request);
     const identity = chatIdentity(request, response, actor);
     enforceChatRateLimit(`${identity.rateKey}:reset`, Date.now(), 5);
-    const current = findChatConversation(identity);
-    if (current) q.endChatConversation.run(new Date().toISOString(), current.id);
-    const conversation = createChatConversation(identity);
+    const current = await findChatConversation(identity);
+    if (current) await q.endChatConversation.run(new Date().toISOString(), current.id);
+    const conversation = await createChatConversation(identity);
     return respond(response, 201, { conversationId: conversation.id, context: emptyChatContext(),
-      messages: chatMessagesFor(conversation.id, actor), aiAvailable: chatAiAvailable() });
+      messages: await chatMessagesFor(conversation.id, actor), aiAvailable: chatAiAvailable() });
   }
   if (method === 'POST' && pathname === '/api/chat/messages') {
     assertOrigin(request);
-    const actor = actorFrom(request);
+    const actor = await actorFrom(request);
     const identity = chatIdentity(request, response, actor);
     enforceChatRateLimit(identity.rateKey);
     const body = await readBody(request, 12 * 1024);
@@ -2277,7 +2303,7 @@ async function routeApi(request, response, url) {
       || !body.serviceId)) {
       throw new HttpError(400, 'Thời lượng dịch vụ được chọn chưa hợp lệ.', 'INVALID_DURATION');
     }
-    const conversation = q.chatConversationById.get(body.conversationId);
+    const conversation = await q.chatConversationById.get(body.conversationId);
     if (!ownsChatConversation(conversation, identity)) throw new HttpError(404, 'Không tìm thấy phiên hội thoại. Hãy bắt đầu cuộc trò chuyện mới.', 'CHAT_SESSION_NOT_FOUND');
     let context;
     try { context = JSON.parse(conversation.context || '{}'); } catch { context = emptyChatContext(); }
@@ -2285,9 +2311,9 @@ async function routeApi(request, response, url) {
     let categories;
     let history;
     try {
-      services = parseRows('services').map(normalizeServiceRecord);
-      categories = parseRows('categories').filter((category) => category.active !== false);
-      history = q.chatMessages.all(conversation.id, 8).reverse()
+      services = (await parseRows('services')).map(normalizeServiceRecord);
+      categories = (await parseRows('categories')).filter((category) => category.active !== false);
+      history = (await q.chatMessages.all(conversation.id, 8)).reverse()
         .map((row) => ({ role: row.role, content: row.content }));
     } catch (error) {
       chatErrorLog('load service context', error);
@@ -2318,29 +2344,29 @@ async function routeApi(request, response, url) {
     let userRow;
     let assistantRow;
     try {
-      transaction(() => {
-        userRow = persistChatMessage(conversation.id, 'user', 'text', redactChatText(message));
-        assistantRow = persistChatMessage(conversation.id, 'assistant', reply.type, reply.text,
+      await transaction(async () => {
+        userRow = await persistChatMessage(conversation.id, 'user', 'text', redactChatText(message));
+        assistantRow = await persistChatMessage(conversation.id, 'assistant', reply.type, reply.text,
           { ...reply, pricingServiceDate: nextContext.preferred_date || businessNow().date });
-        q.updateChatConversation.run(JSON.stringify(nextContext), updatedAt, Date.now() + CHAT_TTL_MS, conversation.id);
-        q.pruneChatMessages.run(conversation.id, conversation.id);
+        await q.updateChatConversation.run(JSON.stringify(nextContext), updatedAt, Date.now() + CHAT_TTL_MS, conversation.id);
+        await q.pruneChatMessages.run(conversation.id, conversation.id);
       });
     } catch (error) {
       chatErrorLog('persist messages', error);
       throw new HttpError(503, 'Mình chưa thể lưu cuộc trò chuyện lúc này. Bạn thử lại sau một chút nhé.', 'DATABASE_ERROR');
     }
     return respond(response, 200, { conversationId: conversation.id, context: nextContext, aiUsed, aiFailed,
-      messages: [chatMessageView(userRow, actor), chatMessageView(assistantRow, actor)] });
+      messages: await Promise.all([chatMessageView(userRow, actor), chatMessageView(assistantRow, actor)]) });
   }
-  if (method === 'GET' && pathname === '/api/bootstrap') return respond(response, 200, collectionSnapshot(actorFrom(request)));
-  if (method === 'GET' && pathname === '/api/auth/session') return respond(response, 200, { user: actorFrom(request) });
+  if (method === 'GET' && pathname === '/api/bootstrap') return respond(response, 200, await collectionSnapshot(await actorFrom(request)));
+  if (method === 'GET' && pathname === '/api/auth/session') return respond(response, 200, { user: await actorFrom(request) });
 
   if (method === 'GET' && pathname === '/api/admin/staff-invites') {
-    requireActor(request, ['admin']);
+    await requireActor(request, ['admin']);
     const now = Date.now();
-    const invites = new Map(q.staffInvites.all().map((invite) => [invite.staff_id, invite]));
-    const accounts = new Map(parseRows('users').filter((user) => user.role === 'staff').map((user) => [user.staffId, user]));
-    const staff = parseRows('staff').map((person) => {
+    const invites = new Map((await q.staffInvites.all()).map((invite) => [invite.staff_id, invite]));
+    const accounts = new Map((await parseRows('users')).filter((user) => user.role === 'staff').map((user) => [user.staffId, user]));
+    const staff = (await parseRows('staff')).map((person) => {
       const invite = invites.get(person.id);
       const account = accounts.get(person.id);
       const invitationPending = invite && !invite.accepted_at && Date.parse(invite.expires_at) > now;
@@ -2356,11 +2382,11 @@ async function routeApi(request, response, url) {
   if (method === 'GET' && pathname === '/api/auth/staff-invite') {
     const token = url.searchParams.get('token') || '';
     const tokenHash = createHash('sha256').update(token).digest('hex');
-    const invite = token ? q.staffInviteByToken.get(tokenHash) : null;
+    const invite = token ? await q.staffInviteByToken.get(tokenHash) : null;
     if (!invite || invite.accepted_at || Date.parse(invite.expires_at) <= Date.now()) {
       throw new HttpError(410, 'Lời mời không còn hiệu lực hoặc đã được sử dụng.', 'INVITE_INVALID');
     }
-    const staff = getRecord('staff', invite.staff_id);
+    const staff = await getRecord('staff', invite.staff_id);
     if (!staff || staff.active === false) throw new HttpError(410, 'Hồ sơ nhân viên không còn hoạt động.', 'INVITE_INVALID');
     return respond(response, 200, { invitation: { name: staff.name, email: invite.email, expiresAt: invite.expires_at } });
   }
@@ -2371,20 +2397,20 @@ async function routeApi(request, response, url) {
     const attemptKey = `${request.socket.remoteAddress || 'local'}:${email}`;
     const history = (loginAttempts.get(attemptKey) || []).filter((time) => Date.now() - time < 15 * 60 * 1000);
     if (history.length >= 8) throw new HttpError(429, 'Đăng nhập sai quá nhiều lần. Vui lòng thử lại sau 15 phút.', 'LOGIN_RATE_LIMIT');
-    const user = parseRows('users').find((item) => normalizeEmailAddress(item.email) === email && item.active !== false);
+    const user = (await parseRows('users')).find((item) => normalizeEmailAddress(item.email) === email && item.active !== false);
     const supplied = typeof body.password === 'string' ? scryptSync(body.password, user?.passwordSalt || 'invalid-user', 64).toString('hex') : '';
     if (!user || !timingSafeEqual(Buffer.from(supplied, 'hex'), Buffer.from(user.passwordHash, 'hex'))) {
       history.push(Date.now()); loginAttempts.set(attemptKey, history);
       throw new HttpError(401, 'Gmail hoặc mật khẩu không chính xác. Vui lòng nhập lại.', 'AUTH_FAILED');
     }
     loginAttempts.delete(attemptKey);
-    createSession(user.id, response);
+    await createSession(user.id, response);
     return respond(response, 200, { user: safeUser(user) });
   }
 
   if (method === 'POST' && pathname === '/api/auth/logout') {
     const token = cookieValue(request, 'serenity.sid');
-    if (token) q.deleteSession.run(createHash('sha256').update(token).digest('hex'));
+    if (token) await q.deleteSession.run(createHash('sha256').update(token).digest('hex'));
     clearSessionCookie(response);
     return respond(response, 200, { ok: true });
   }
@@ -2398,34 +2424,35 @@ async function routeApi(request, response, url) {
     if (name.length < 2 || name.length > 60 || !/^\S+@\S+\.\S+$/.test(email) || !isVietnamPhone(phone) || !isStrongPassword(password)) {
       throw new HttpError(400, 'Thông tin đăng ký chưa hợp lệ. Mật khẩu cần tối thiểu 8 ký tự, có ít nhất 1 chữ số và 1 ký tự đặc biệt.', 'VALIDATION');
     }
-    if (parseRows('users').some((user) => normalizeEmailAddress(user.email) === email)) throw new HttpError(409, 'Email này đã được sử dụng.', 'DUPLICATE_EMAIL');
-    if (parseRows('users').some((user) => user.phone === phone)) throw new HttpError(409, 'Số điện thoại này đã được sử dụng.', 'DUPLICATE_PHONE');
-    const reservedInvite = q.staffInvitesByEmail.all(email).find((invite) => !invite.accepted_at && Date.parse(invite.expires_at) > Date.now());
+    const existingUsers = await parseRows('users');
+    if (existingUsers.some((user) => normalizeEmailAddress(user.email) === email)) throw new HttpError(409, 'Email này đã được sử dụng.', 'DUPLICATE_EMAIL');
+    if (existingUsers.some((user) => user.phone === phone)) throw new HttpError(409, 'Số điện thoại này đã được sử dụng.', 'DUPLICATE_PHONE');
+    const reservedInvite = (await q.staffInvitesByEmail.all(email)).find((invite) => !invite.accepted_at && Date.parse(invite.expires_at) > Date.now());
     if (reservedInvite) throw new HttpError(409, 'Email này đang có lời mời nhân viên. Hãy mở liên kết kích hoạt trong email.', 'STAFF_INVITE_PENDING');
     const salt = randomBytes(16).toString('hex');
     const user = { id: `usr_${randomUUID()}`, name, email, phone, role: 'customer', active: true,
       passwordSalt: salt, passwordHash: scryptSync(password, salt, 64).toString('hex'), createdAt: new Date().toISOString() };
-    transaction(() => { saveRecord('users', user); nextVersion('users'); });
-    createSession(user.id, response);
+    await transaction(async () => { await saveRecord('users', user); await nextVersion('users'); });
+    await createSession(user.id, response);
     return respond(response, 201, { user: safeUser(user) });
   }
 
   if (method === 'POST' && pathname === '/api/admin/staff-invites') {
     assertOrigin(request);
-    const actor = requireActor(request, ['admin']);
+    const actor = await requireActor(request, ['admin']);
     const body = await readBody(request);
     const staffId = String(body.staffId || '').trim();
     const email = normalizeEmailAddress(body.email);
-    const staff = getRecord('staff', staffId);
+    const staff = await getRecord('staff', staffId);
     if (!staff || staff.active === false) throw new HttpError(404, 'Không tìm thấy chuyên viên đang hoạt động.', 'STAFF_INVALID');
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) throw new HttpError(400, 'Vui lòng nhập địa chỉ email hợp lệ.', 'VALIDATION');
 
-    const users = parseRows('users');
+    const users = await parseRows('users');
     const existingStaffAccount = users.find((user) => user.role === 'staff' && user.staffId === staff.id);
     if (existingStaffAccount && existingStaffAccount.active !== false) throw new HttpError(409, 'Chuyên viên này đã có tài khoản hoạt động.', 'STAFF_ACCOUNT_EXISTS');
     const emailOwner = users.find((user) => normalizeEmailAddress(user.email) === email);
     if (emailOwner && emailOwner.id !== existingStaffAccount?.id) throw new HttpError(409, 'Email này đã được dùng cho một tài khoản khác.', 'DUPLICATE_EMAIL');
-    const otherInvite = q.staffInvitesByEmail.all(email).find((invite) => invite.staff_id !== staff.id && !invite.accepted_at && Date.parse(invite.expires_at) > Date.now());
+    const otherInvite = (await q.staffInvitesByEmail.all(email)).find((invite) => invite.staff_id !== staff.id && !invite.accepted_at && Date.parse(invite.expires_at) > Date.now());
     if (otherInvite) throw new HttpError(409, 'Email này đang được dùng trong lời mời của một chuyên viên khác.', 'DUPLICATE_EMAIL');
 
     const token = randomBytes(32).toString('base64url');
@@ -2433,9 +2460,9 @@ async function routeApi(request, response, url) {
     const now = new Date();
     const createdAt = now.toISOString();
     const expiresAt = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
-    transaction(() => {
-      q.upsertStaffInvite.run(staff.id, email, tokenHash, actor.id, createdAt, expiresAt);
-      withAudit(actor, 'staff.invite.created', null, { staffId: staff.id, email, expiresAt });
+    await transaction(async () => {
+      await q.upsertStaffInvite.run(staff.id, email, tokenHash, actor.id, createdAt, expiresAt);
+      await withAudit(actor, 'staff.invite.created', null, { staffId: staff.id, email, expiresAt });
     });
     const baseOrigin = request.headers.origin ? new URL(request.headers.origin).origin : `http://${request.headers.host || 'localhost:3001'}`;
     const invitationUrl = new URL('/moi-nhan-vien', baseOrigin);
@@ -2448,17 +2475,17 @@ async function routeApi(request, response, url) {
     const body = await readBody(request);
     const token = String(body.token || '');
     const tokenHash = createHash('sha256').update(token).digest('hex');
-    const invite = token ? q.staffInviteByToken.get(tokenHash) : null;
+    const invite = token ? await q.staffInviteByToken.get(tokenHash) : null;
     if (!invite || invite.accepted_at || Date.parse(invite.expires_at) <= Date.now()) {
       throw new HttpError(410, 'Lời mời không còn hiệu lực hoặc đã được sử dụng.', 'INVITE_INVALID');
     }
     if (!isStrongPassword(body.password)) throw new HttpError(400, 'Mật khẩu cần tối thiểu 8 ký tự, có ít nhất 1 chữ số và 1 ký tự đặc biệt.', 'VALIDATION');
     const phone = normalizeVietnamPhone(body.phone);
     if (!isVietnamPhone(phone)) throw new HttpError(400, 'Vui lòng nhập số điện thoại Việt Nam hợp lệ.', 'VALIDATION');
-    const staff = getRecord('staff', invite.staff_id);
+    const staff = await getRecord('staff', invite.staff_id);
     if (!staff || staff.active === false) throw new HttpError(410, 'Hồ sơ nhân viên không còn hoạt động.', 'INVITE_INVALID');
 
-    const users = parseRows('users');
+    const users = await parseRows('users');
     const staffAccount = users.find((user) => user.role === 'staff' && user.staffId === staff.id);
     if (staffAccount && staffAccount.active !== false) throw new HttpError(409, 'Tài khoản nhân viên đã được kích hoạt.', 'STAFF_ACCOUNT_EXISTS');
     const emailOwner = users.find((user) => normalizeEmailAddress(user.email) === normalizeEmailAddress(invite.email));
@@ -2474,39 +2501,39 @@ async function routeApi(request, response, url) {
       passwordSalt, passwordHash: scryptSync(body.password, passwordSalt, 64).toString('hex'),
       createdAt: staffAccount?.createdAt || now, emailVerifiedAt: now, updatedAt: now,
     };
-    transaction(() => {
-      const result = q.acceptStaffInvite.run(now, staff.id, tokenHash);
+    await transaction(async () => {
+      const result = await q.acceptStaffInvite.run(now, staff.id, tokenHash);
       if (Number(result.changes) !== 1) throw new HttpError(410, 'Lời mời đã được sử dụng hoặc không còn hiệu lực.', 'INVITE_INVALID');
-      saveRecord('users', user);
-      nextVersion('users');
-      withAudit(user, 'staff.invite.accepted', null, { staffId: staff.id, email: invite.email });
+      await saveRecord('users', user);
+      await nextVersion('users');
+      await withAudit(user, 'staff.invite.accepted', null, { staffId: staff.id, email: invite.email });
     });
-    createSession(user.id, response);
+    await createSession(user.id, response);
     return respond(response, 201, { user: safeUser(user) });
   }
 
   if (method === 'PATCH' && pathname === '/api/auth/profile') {
     assertOrigin(request);
-    const actor = requireActor(request);
+    const actor = await requireActor(request);
     const body = await readBody(request);
-    const current = getRecord('users', actor.id);
+    const current = await getRecord('users', actor.id);
     const name = String(body.name ?? current.name).trim();
     const email = normalizeEmailAddress(body.email ?? current.email);
     const phone = normalizeVietnamPhone(body.phone ?? current.phone);
     if (name.length < 2 || name.length > 60 || !/^\S+@\S+\.\S+$/.test(email) || !isVietnamPhone(phone)) throw new HttpError(400, 'Thông tin hồ sơ chưa hợp lệ.', 'VALIDATION');
-    const users = parseRows('users');
+    const users = await parseRows('users');
     if (users.some((user) => user.id !== actor.id && normalizeEmailAddress(user.email) === email)) throw new HttpError(409, 'Email này đã được sử dụng.', 'DUPLICATE_EMAIL');
     if (users.some((user) => user.id !== actor.id && user.phone === phone)) throw new HttpError(409, 'Số điện thoại này đã được sử dụng.', 'DUPLICATE_PHONE');
     const updated = { ...current, name, email, phone, updatedAt: new Date().toISOString() };
-    transaction(() => { saveRecord('users', updated); nextVersion('users'); });
+    await transaction(async () => { await saveRecord('users', updated); await nextVersion('users'); });
     return respond(response, 200, { user: safeUser(updated) });
   }
 
   if (method === 'POST' && pathname === '/api/auth/change-password') {
     assertOrigin(request);
-    const actor = requireActor(request);
+    const actor = await requireActor(request);
     const body = await readBody(request);
-    const current = getRecord('users', actor.id);
+    const current = await getRecord('users', actor.id);
     const oldPassword = String(body.oldPassword || '');
     const newPassword = String(body.newPassword || '');
     if (!oldPassword) {
@@ -2528,15 +2555,15 @@ async function routeApi(request, response, url) {
       throw new HttpError(400, 'Mật khẩu mới phải khác mật khẩu hiện tại.', 'VALIDATION', { newPassword: 'Mật khẩu mới phải khác mật khẩu hiện tại.' });
     }
     const salt = randomBytes(16).toString('hex');
-    transaction(() => {
-      saveRecord('users', {
+    await transaction(async () => {
+      await saveRecord('users', {
         ...current,
         passwordSalt: salt,
         passwordHash: scryptSync(newPassword, salt, 64).toString('hex'),
         updatedAt: new Date().toISOString(),
       });
-      nextVersion('users');
-      withAudit(actor, 'auth.password.changed', null, { userId: actor.id });
+      await nextVersion('users');
+      await withAudit(actor, 'auth.password.changed', null, { userId: actor.id });
     });
     return respond(response, 200, { ok: true });
   }
@@ -2548,8 +2575,8 @@ async function routeApi(request, response, url) {
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) {
       throw new HttpError(400, 'Vui lòng nhập địa chỉ email hợp lệ.', 'VALIDATION', { email: 'Vui lòng nhập địa chỉ email hợp lệ.' });
     }
-    q.deleteExpiredPasswordResetOtps.run(Date.now());
-    const user = parseRows('users').find((item) => normalizeEmailAddress(item.email) === email && item.active !== false);
+    await q.deleteExpiredPasswordResetOtps.run(Date.now());
+    const user = (await parseRows('users')).find((item) => normalizeEmailAddress(item.email) === email && item.active !== false);
     if (!user) {
       throw new HttpError(404, 'Không tìm thấy tài khoản hoạt động với địa chỉ email này.', 'USER_NOT_FOUND', {
         email: 'Không tìm thấy tài khoản hoạt động với địa chỉ email này.',
@@ -2567,9 +2594,9 @@ async function routeApi(request, response, url) {
       throw new HttpError(503, error.message || 'Không thể gửi email mã OTP lúc này.', code);
     }
 
-    transaction(() => {
-      q.upsertPasswordResetOtp.run(email, user.id, otpHash, expiresAt, createdAt);
-      withAudit(user, 'auth.password_reset.otp_sent', null, { email, expiresAt: new Date(expiresAt).toISOString() });
+    await transaction(async () => {
+      await q.upsertPasswordResetOtp.run(email, user.id, otpHash, expiresAt, createdAt);
+      await withAudit(user, 'auth.password_reset.otp_sent', null, { email, expiresAt: new Date(expiresAt).toISOString() });
     });
 
     return respond(response, 200, {
@@ -2600,16 +2627,16 @@ async function routeApi(request, response, url) {
       throw new HttpError(400, Object.values(fieldErrors)[0], 'VALIDATION', fieldErrors);
     }
 
-    q.deleteExpiredPasswordResetOtps.run(Date.now());
-    const otpRecord = q.passwordResetOtpByEmail.get(email);
+    await q.deleteExpiredPasswordResetOtps.run(Date.now());
+    const otpRecord = await q.passwordResetOtpByEmail.get(email);
     if (!otpRecord || otpRecord.expires_at <= Date.now()) {
-      q.deletePasswordResetOtp.run(email);
+      await q.deletePasswordResetOtp.run(email);
       throw new HttpError(400, 'Mã OTP không hợp lệ hoặc đã hết hạn. Vui lòng yêu cầu mã mới.', 'OTP_INVALID', {
         otp: 'Mã OTP không hợp lệ hoặc đã hết hạn. Vui lòng yêu cầu mã mới.',
       });
     }
     if (Number(otpRecord.attempts) >= 5) {
-      q.deletePasswordResetOtp.run(email);
+      await q.deletePasswordResetOtp.run(email);
       throw new HttpError(429, 'Bạn đã nhập sai mã OTP quá 5 lần. Vui lòng yêu cầu gửi lại mã mới.', 'OTP_MAX_ATTEMPTS', {
         otp: 'Bạn đã nhập sai mã OTP quá 5 lần. Vui lòng yêu cầu gửi lại mã mới.',
       });
@@ -2617,31 +2644,31 @@ async function routeApi(request, response, url) {
 
     const suppliedHash = scryptSync(otp, email, 64).toString('hex');
     if (!timingSafeEqual(Buffer.from(suppliedHash, 'hex'), Buffer.from(otpRecord.otp_hash, 'hex'))) {
-      q.incrementPasswordResetOtpAttempts.run(email);
+      await q.incrementPasswordResetOtpAttempts.run(email);
       throw new HttpError(400, 'Mã xác thực OTP không chính xác.', 'OTP_INVALID', {
         otp: 'Mã xác thực OTP không chính xác.',
       });
     }
 
-    const user = getRecord('users', otpRecord.user_id) || parseRows('users').find((item) => normalizeEmailAddress(item.email) === email);
+    const user = (await getRecord('users', otpRecord.user_id)) || (await parseRows('users')).find((item) => normalizeEmailAddress(item.email) === email);
     if (!user || user.active === false) {
-      q.deletePasswordResetOtp.run(email);
+      await q.deletePasswordResetOtp.run(email);
       throw new HttpError(404, 'Tài khoản không tồn tại hoặc đã ngừng hoạt động.', 'USER_NOT_FOUND');
     }
 
     const salt = randomBytes(16).toString('hex');
     const now = new Date().toISOString();
-    transaction(() => {
-      saveRecord('users', {
+    await transaction(async () => {
+      await saveRecord('users', {
         ...user,
         passwordSalt: salt,
         passwordHash: scryptSync(newPassword, salt, 64).toString('hex'),
         updatedAt: now,
       });
-      nextVersion('users');
-      q.deletePasswordResetOtp.run(email);
-      q.deleteUserSessions.run(user.id);
-      withAudit(user, 'auth.password_reset.completed', null, { email });
+      await nextVersion('users');
+      await q.deletePasswordResetOtp.run(email);
+      await q.deleteUserSessions.run(user.id);
+      await withAudit(user, 'auth.password_reset.completed', null, { email });
     });
 
     loginAttempts.delete(`${request.socket.remoteAddress || 'local'}:${email}`);
@@ -2652,20 +2679,20 @@ async function routeApi(request, response, url) {
   }
 
   if (method === 'GET' && pathname === '/api/bookings') {
-    const actor = actorFrom(request);
-    if (actor?.role === 'admin') return respond(response, 200, { bookings: parseRows('bookings') });
-    if (actor?.role === 'customer') return respond(response, 200, { bookings: parseRows('bookings').filter((booking) => booking.userId === actor.id).map(visibleCustomerBooking) });
-    if (actor?.role === 'staff') return respond(response, 200, { bookings: parseRows('bookings').filter((booking) => booking.staffId === actor.staffId).map((booking) => visibleBooking(booking, actor)) });
+    const actor = await actorFrom(request);
+    if (actor?.role === 'admin') return respond(response, 200, { bookings: await parseRows('bookings') });
+    if (actor?.role === 'customer') return respond(response, 200, { bookings: (await parseRows('bookings')).filter((booking) => booking.userId === actor.id).map(visibleCustomerBooking) });
+    if (actor?.role === 'staff') return respond(response, 200, { bookings: (await parseRows('bookings')).filter((booking) => booking.staffId === actor.staffId).map((booking) => visibleBooking(booking, actor)) });
     const phone = normalizeVietnamPhone(url.searchParams.get('phone'));
     if (!isVietnamPhone(phone)) return respond(response, 200, { bookings: [] });
-    return respond(response, 200, { bookings: parseRows('bookings').filter((booking) => booking.userId == null && booking.customerPhone === phone).map(visibleCustomerBooking) });
+    return respond(response, 200, { bookings: (await parseRows('bookings')).filter((booking) => booking.userId == null && booking.customerPhone === phone).map(visibleCustomerBooking) });
   }
 
   const bookingInvoiceRoute = pathname.match(/^\/api\/bookings\/([^/]+)\/invoice$/);
   if (method === 'GET' && bookingInvoiceRoute) {
-    const actor = requireActor(request, ['admin', 'customer']);
+    const actor = await requireActor(request, ['admin', 'customer']);
     const id = decodeURIComponent(bookingInvoiceRoute[1]);
-    const booking = getRecord('bookings', id);
+    const booking = await getRecord('bookings', id);
     if (!booking || (actor.role === 'customer' && booking.userId !== actor.id)) {
       throw new HttpError(404, 'Không tìm thấy hóa đơn thanh toán.', 'NOT_FOUND');
     }
@@ -2691,7 +2718,7 @@ async function routeApi(request, response, url) {
         paidAt: firstPayment?.at || booking.paymentPaidAt || booking.updatedAt || booking.createdAt,
       },
     };
-    const settings = getRecord('settings', 'main') || {};
+    const settings = await getRecord('settings', 'main') || {};
     return respond(response, 200, { invoice: {
       ...invoiceSnapshot,
       merchant: {
@@ -2703,13 +2730,13 @@ async function routeApi(request, response, url) {
 
   const bookingPaymentRoute = pathname.match(/^\/api\/bookings\/([^/]+)\/payment$/);
   if (method === 'GET' && bookingPaymentRoute) {
-    const actor = requireActor(request);
+    const actor = await requireActor(request);
     if (!['admin', 'customer'].includes(actor.role)) throw new HttpError(403, 'Tài khoản không có quyền xem thanh toán.', 'FORBIDDEN');
     const id = decodeURIComponent(bookingPaymentRoute[1]);
-    const booking = getRecord('bookings', id);
+    const booking = await getRecord('bookings', id);
     if (!booking || (actor.role === 'customer' && booking.userId !== actor.id)) throw new HttpError(404, 'Không tìm thấy lịch thanh toán.', 'NOT_FOUND');
-    const expiredCount = paymentOperations.expirePendingPayments();
-    const current = getRecord('bookings', id) || booking;
+    const expiredCount = await paymentOperations.expirePendingPayments();
+    const current = (await getRecord('bookings', id)) || booking;
     if (expiredCount) await backupIfDue();
     const mayPay = current.status === 'Pending' && ['awaiting_payment', 'payment_submitted'].includes(current.paymentStatus)
       && Date.parse(current.paymentExpiresAt || '') > Date.now();
@@ -2724,11 +2751,11 @@ async function routeApi(request, response, url) {
   const notifyTransferRoute = pathname.match(/^\/api\/bookings\/([^/]+)\/notify-transfer$/);
   if (method === 'POST' && notifyTransferRoute) {
     assertOrigin(request);
-    const actor = actorFrom(request);
+    const actor = await actorFrom(request);
     if (!actor) throw new HttpError(401, 'Vui lòng đăng nhập trước khi thực hiện thao tác.', 'UNAUTHORIZED');
     const id = decodeURIComponent(notifyTransferRoute[1]);
     const body = await readBody(request, 16 * 1024).catch(() => ({}));
-    const booking = getRecord('bookings', id);
+    const booking = await getRecord('bookings', id);
     if (!booking) throw new HttpError(404, 'Không tìm thấy lịch hẹn.', 'NOT_FOUND');
     if (actor.role === 'customer' && booking.userId !== actor.id) {
       throw new HttpError(403, 'Bạn không có quyền thông báo cho đơn này.', 'FORBIDDEN');
@@ -2745,10 +2772,10 @@ async function routeApi(request, response, url) {
       updatedAt: now,
       statusHistory: [...(booking.statusHistory || []), { status: booking.status, at: now, by: actor.id, reason: 'Khách hàng thông báo đã chuyển khoản thành công.' }],
     };
-    transaction(() => {
-      saveRecord('bookings', updated);
-      nextVersion('bookings');
-      withAudit(actor, 'booking.payment.transfer_reported', id, { reference, bookingCode: booking.code });
+    await transaction(async () => {
+      await saveRecord('bookings', updated);
+      await nextVersion('bookings');
+      await withAudit(actor, 'booking.payment.transfer_reported', id, { reference, bookingCode: booking.code });
     });
     await backupIfDue();
     return respond(response, 200, { ok: true, booking: updated });
@@ -2756,7 +2783,7 @@ async function routeApi(request, response, url) {
 
   if (method === 'POST' && pathname === '/api/bookings') {
     assertOrigin(request);
-    const actor = actorFrom(request);
+    const actor = await actorFrom(request);
     if (!actor) throw new HttpError(401, 'Vui lòng đăng nhập tài khoản trước khi đặt lịch.', 'UNAUTHORIZED');
     if (actor.role === 'staff') throw new HttpError(403, 'Tài khoản nhân viên không thể đặt lịch khách.', 'FORBIDDEN');
     if (!['customer', 'admin'].includes(actor.role)) throw new HttpError(403, 'Tài khoản không có quyền đặt lịch.', 'FORBIDDEN');
@@ -2770,8 +2797,8 @@ async function routeApi(request, response, url) {
     assertOrigin(request);
     const body = await readBody(request, 16 * 1024);
     const id = decodeURIComponent(rescheduleRoute[1]);
-    const actor = actorFrom(request);
-    const result = rescheduleRoute[2] === 'quote' ? holidaySales.prepareReschedule(id, body, actor) : holidaySales.confirmReschedule(id, body, actor);
+    const actor = await actorFrom(request);
+    const result = rescheduleRoute[2] === 'quote' ? await holidaySales.prepareReschedule(id, body, actor) : await holidaySales.confirmReschedule(id, body, actor);
     if (rescheduleRoute[2] === 'confirm') await backupIfDue();
     const payment = result.paymentRequired ? paymentInstructions(result.booking, process.env, {
       amount: result.paymentAmount, expiresAt: result.paymentExpiresAt,
@@ -2788,14 +2815,14 @@ async function routeApi(request, response, url) {
     const id = decodeURIComponent(bookingRoute[1]);
     const action = bookingRoute[2];
     const body = await readBody(request);
-    let booking = getRecord('bookings', id);
+    let booking = await getRecord('bookings', id);
     if (!booking) throw new HttpError(404, 'Không tìm thấy lịch hẹn.', 'NOT_FOUND');
     if (booking.reschedulePaymentRequest
       && Date.parse(booking.reschedulePaymentRequest.expiresAt || '') <= Date.now()) {
-      paymentOperations.expirePendingPayments();
-      booking = getRecord('bookings', id) || booking;
+      await paymentOperations.expirePendingPayments();
+      booking = (await getRecord('bookings', id)) || booking;
     }
-    const actor = actorFrom(request);
+    const actor = await actorFrom(request);
     if (action === 'status') {
       if (!actor || !['admin', 'staff'].includes(actor.role) || (actor.role === 'staff' && actor.staffId !== booking.staffId)) throw new HttpError(403, 'Bạn không có quyền cập nhật lịch này.', 'FORBIDDEN');
       if (booking.reschedulePaymentRequest) throw new HttpError(409, 'Đang chờ thanh toán chênh lệch; hãy đợi mã hết hạn trước khi đổi trạng thái lịch.', 'RESCHEDULE_PAYMENT_PENDING');
@@ -2816,10 +2843,10 @@ async function routeApi(request, response, url) {
         ...(nextStatus === 'CheckedIn' ? { checkedInAt: now } : {}),
         ...(nextStatus === 'NoShow' ? { noShowAt: now } : {}),
       };
-      transaction(() => {
-        if (nextStatus === 'Cancelled') paymentOperations.releaseCouponForUnpaidBooking(booking);
-        saveRecord('bookings', updated); nextVersion('bookings');
-        withAudit(actor, `booking.${nextStatus.toLowerCase()}`, id, { from: booking.status, to: nextStatus, reason: updated.cancelReason || '' });
+      await transaction(async () => {
+        if (nextStatus === 'Cancelled') await paymentOperations.releaseCouponForUnpaidBooking(booking);
+        await saveRecord('bookings', updated); await nextVersion('bookings');
+        await withAudit(actor, `booking.${nextStatus.toLowerCase()}`, id, { from: booking.status, to: nextStatus, reason: updated.cancelReason || '' });
       });
       await backupIfDue();
       return respond(response, 200, { booking: visibleBooking(updated, actor) });
@@ -2832,7 +2859,7 @@ async function routeApi(request, response, url) {
       if (booking.reschedulePaymentRequest) throw new HttpError(409, 'Đang chờ thanh toán chênh lệch dời lịch. Vui lòng chờ mã hết hạn rồi thử hủy lại.', 'RESCHEDULE_PAYMENT_PENDING');
       if (!['Pending', 'Confirmed'].includes(booking.status)) throw new HttpError(409, 'Lịch này không còn ở trạng thái có thể hủy.', 'STATUS_INVALID');
       if (booking.refundRequest?.status === 'pending') throw new HttpError(409, 'Đơn đang có yêu cầu hoàn tiền cần xử lý trước khi hủy.', 'REFUND_PENDING');
-      const settings = getRecord('settings', 'main') || {};
+      const settings = await getRecord('settings', 'main') || {};
       const now = businessNow();
       const limit = Number(settings.cancelBeforeHours ?? 2) * 60;
       if (absoluteMinute(booking.date, booking.startTime) - absoluteMinute(now.date, fromMin(now.minutes)) < limit) throw new HttpError(409, `Cần hủy trước giờ hẹn tối thiểu ${limit / 60} tiếng.`, 'CANCEL_TOO_LATE');
@@ -2866,10 +2893,10 @@ async function routeApi(request, response, url) {
         ...(refundRequest ? { refundRequest } : {}),
         cancelReason: 'Khách hàng yêu cầu hủy lịch.', cancelledAt, updatedAt: cancelledAt,
         statusHistory: [...(booking.statusHistory || []), { status: 'Cancelled', at: cancelledAt, by: actor?.id || 'guest', reason: 'Khách hàng yêu cầu hủy lịch.' }] };
-      transaction(() => {
-        paymentOperations.releaseCouponForUnpaidBooking(booking);
-        saveRecord('bookings', updated); nextVersion('bookings');
-        withAudit(actor, 'booking.cancelled', id, { reason: updated.cancelReason,
+      await transaction(async () => {
+        await paymentOperations.releaseCouponForUnpaidBooking(booking);
+        await saveRecord('bookings', updated); await nextVersion('bookings');
+        await withAudit(actor, 'booking.cancelled', id, { reason: updated.cancelReason,
           refundAmount: refundRequest?.amount || 0, refundRecipientLast4: refundRequest?.recipient.accountNumber.slice(-4) || null });
       });
       await backupIfDue();
@@ -2884,10 +2911,10 @@ async function routeApi(request, response, url) {
   const paymentRoute = pathname.match(/^\/api\/admin\/bookings\/([^/]+)\/payments$/);
   if (method === 'POST' && paymentRoute) {
     assertOrigin(request);
-    const actor = requireActor(request, ['admin']);
+    const actor = await requireActor(request, ['admin']);
     const id = decodeURIComponent(paymentRoute[1]);
     const body = await readBody(request);
-    const booking = getRecord('bookings', id);
+    const booking = await getRecord('bookings', id);
     if (!booking) throw new HttpError(404, 'Không tìm thấy lịch hẹn.', 'NOT_FOUND');
     const type = String(body.type || '');
     const amount = Number(body.amount);
@@ -2909,34 +2936,34 @@ async function routeApi(request, response, url) {
       at: new Date().toISOString(), recordedBy: actor.id,
     };
     const updated = { ...booking, paymentRecords: [...records, entry], updatedAt: new Date().toISOString() };
-    transaction(() => { saveRecord('bookings', updated); nextVersion('bookings'); withAudit(actor, `booking.payment.${type}`, id, { amount, method: methodName }); });
+    await transaction(async () => { await saveRecord('bookings', updated); await nextVersion('bookings'); await withAudit(actor, `booking.payment.${type}`, id, { amount, method: methodName }); });
     await backupIfDue();
     return respond(response, 201, { booking: updated, payment: entry });
   }
 
   if (method === 'PUT' && pathname.startsWith('/api/admin/collections/')) {
     assertOrigin(request);
-    const actor = requireActor(request, ['admin']);
+    const actor = await requireActor(request, ['admin']);
     const collection = decodeURIComponent(pathname.slice('/api/admin/collections/'.length));
     if (!ADMIN_COLLECTIONS.has(collection)) throw new HttpError(404, 'Danh mục dữ liệu không được hỗ trợ.', 'NOT_FOUND');
     const body = await readBody(request, collection === 'staff' ? 8 * 1024 * 1024 : 1024 * 1024);
     if (!Array.isArray(body.records) || body.records.length > 1000 || body.records.some((record) => !record || typeof record.id !== 'string')) throw new HttpError(400, 'Danh sách dữ liệu không hợp lệ.', 'VALIDATION');
     const expected = Number(request.headers['if-match']);
-    const current = versionOf(collection);
+    const current = await versionOf(collection);
     if (!Number.isInteger(expected) || expected !== current) throw new HttpError(409, 'Dữ liệu đã được thay đổi ở thiết bị khác. Vui lòng tải lại rồi thử lại.', 'VERSION_CONFLICT');
-    if (collection === 'services') validateServiceCollection(body.records);
-    transaction(() => {
-      q.deleteCollection.run(collection);
-      for (const record of body.records) q.insert.run(collection, record.id, JSON.stringify(record));
-      const version = nextVersion(collection);
-      withAudit(actor, `collection.${collection}.updated`, null, { count: body.records.length, version });
+    if (collection === 'services') await validateServiceCollection(body.records);
+    await transaction(async () => {
+      await q.deleteCollection.run(collection);
+      for (const record of body.records) await q.insert.run(collection, record.id, JSON.stringify(record));
+      const version = await nextVersion(collection);
+      await withAudit(actor, `collection.${collection}.updated`, null, { count: body.records.length, version });
     });
     await backupIfDue();
-    return respond(response, 200, { version: versionOf(collection) });
+    return respond(response, 200, { version: await versionOf(collection) });
   }
 
   if ((method === 'POST' || method === 'GET') && pathname.startsWith('/api/admin/backup')) {
-    requireActor(request, ['admin']);
+    await requireActor(request, ['admin']);
     const file = await createBackup();
     if (method === 'POST') return respond(response, 201, { name: path.basename(file), createdAt: new Date().toISOString() });
     response.writeHead(200, { 'Content-Type': 'application/vnd.sqlite3', 'Content-Disposition': `attachment; filename="${path.basename(file)}"`, 'Content-Length': String((await stat(file)).size) });
@@ -2950,36 +2977,36 @@ async function routeApi(request, response, url) {
       email: String(body.email || '').trim(), subject: String(body.subject || 'Tư vấn liệu trình').trim().slice(0, 120), message: String(body.message || '').trim().slice(0, 2000),
       status: 'new', createdAt: new Date().toISOString() };
     if (contact.name.length < 2 || !isVietnamPhone(contact.phone) || contact.message.length < 10) throw new HttpError(400, 'Thông tin liên hệ chưa hợp lệ.', 'VALIDATION');
-    transaction(() => { saveRecord('contacts', contact); nextVersion('contacts'); });
+    await transaction(async () => { await saveRecord('contacts', contact); await nextVersion('contacts'); });
     return respond(response, 201, { contact });
   }
 
   if (method === 'PATCH' && pathname.startsWith('/api/admin/contacts/')) {
     assertOrigin(request);
-    const actor = requireActor(request, ['admin']);
+    const actor = await requireActor(request, ['admin']);
     const id = decodeURIComponent(pathname.slice('/api/admin/contacts/'.length).replace(/\/status$/, ''));
     const body = await readBody(request);
-    const current = getRecord('contacts', id);
+    const current = await getRecord('contacts', id);
     if (!current) throw new HttpError(404, 'Không tìm thấy tin nhắn liên hệ.', 'NOT_FOUND');
     const status = String(body.status || '');
     if (!['new', 'contacted', 'closed'].includes(status)) throw new HttpError(400, 'Trạng thái liên hệ không hợp lệ.', 'VALIDATION');
     const updated = { ...current, status, updatedAt: new Date().toISOString() };
-    transaction(() => { saveRecord('contacts', updated); nextVersion('contacts'); withAudit(actor, 'contact.status', id, { status }); });
+    await transaction(async () => { await saveRecord('contacts', updated); await nextVersion('contacts'); await withAudit(actor, 'contact.status', id, { status }); });
     return respond(response, 200, { contact: updated });
   }
 
   if (method === 'POST' && pathname === '/api/favorites/toggle') {
     assertOrigin(request);
-    const actor = requireActor(request, ['customer']);
+    const actor = await requireActor(request, ['customer']);
     const body = await readBody(request);
-    const service = getRecord('services', String(body.serviceId || ''));
+    const service = await getRecord('services', String(body.serviceId || ''));
     if (!service || service.active === false) throw new HttpError(404, 'Dịch vụ không còn hoạt động.', 'SERVICE_INVALID');
-    const current = parseRows('favorites').find((item) => item.userId === actor.id && item.serviceId === service.id);
+    const current = (await parseRows('favorites')).find((item) => item.userId === actor.id && item.serviceId === service.id);
     let favorited;
-    transaction(() => {
-      if (current) { removeRecord('favorites', current.id); favorited = false; }
-      else { saveRecord('favorites', { id: `fav_${randomUUID()}`, userId: actor.id, serviceId: service.id, createdAt: new Date().toISOString() }); favorited = true; }
-      nextVersion('favorites');
+    await transaction(async () => {
+      if (current) { await removeRecord('favorites', current.id); favorited = false; }
+      else { await saveRecord('favorites', { id: `fav_${randomUUID()}`, userId: actor.id, serviceId: service.id, createdAt: new Date().toISOString() }); favorited = true; }
+      await nextVersion('favorites');
     });
     await backupIfDue();
     return respond(response, 200, { favorited });
@@ -2987,29 +3014,29 @@ async function routeApi(request, response, url) {
 
   if (method === 'POST' && pathname === '/api/reviews') {
     assertOrigin(request);
-    const actor = requireActor(request, ['customer']);
+    const actor = await requireActor(request, ['customer']);
     const body = await readBody(request);
-    const booking = getRecord('bookings', String(body.bookingId || ''));
+    const booking = await getRecord('bookings', String(body.bookingId || ''));
     const rating = Number(body.rating);
     const comment = String(body.comment || '').trim().slice(0, 1000);
     if (!booking || booking.userId !== actor.id || booking.status !== 'Completed') throw new HttpError(403, 'Chỉ có thể đánh giá lịch đã hoàn tất thuộc tài khoản này.', 'REVIEW_NOT_ALLOWED');
     if (!Number.isInteger(rating) || rating < 1 || rating > 5) throw new HttpError(400, 'Số sao phải từ 1 đến 5.', 'VALIDATION');
-    if (parseRows('reviews').some((review) => review.bookingId === booking.id)) throw new HttpError(409, 'Lịch hẹn này đã được đánh giá.', 'DUPLICATE_REVIEW');
+    if ((await parseRows('reviews')).some((review) => review.bookingId === booking.id)) throw new HttpError(409, 'Lịch hẹn này đã được đánh giá.', 'DUPLICATE_REVIEW');
     const review = { id: `rev_${randomUUID()}`, bookingId: booking.id, serviceId: booking.serviceId, userId: actor.id,
       userName: actor.name, rating, comment, status: 'visible', createdAt: new Date().toISOString() };
-    const service = getRecord('services', booking.serviceId);
+    const service = await getRecord('services', booking.serviceId);
     if (!service) throw new HttpError(404, 'Không tìm thấy dịch vụ của lịch hẹn.', 'SERVICE_INVALID');
     const previousCount = Math.max(0, Number(service.reviewsCount) || 0);
     const newCount = previousCount + 1;
     const newRating = previousCount ? (Number(service.rating || 0) * previousCount + rating) / newCount : rating;
-    transaction(() => {
-      saveRecord('reviews', review); nextVersion('reviews');
-      saveRecord('services', { ...service, rating: Number(newRating.toFixed(1)), reviewsCount: newCount, updatedAt: new Date().toISOString() });
-      nextVersion('services');
-      withAudit(actor, 'review.created', booking.id, { rating });
+    await transaction(async () => {
+      await saveRecord('reviews', review); await nextVersion('reviews');
+      await saveRecord('services', { ...service, rating: Number(newRating.toFixed(1)), reviewsCount: newCount, updatedAt: new Date().toISOString() });
+      await nextVersion('services');
+      await withAudit(actor, 'review.created', booking.id, { rating });
     });
     await backupIfDue();
-    return respond(response, 201, { review, service: getRecord('services', service.id) });
+    return respond(response, 201, { review, service: await getRecord('services', service.id) });
   }
 
   throw new HttpError(404, 'Không tìm thấy API.', 'NOT_FOUND');
@@ -3139,28 +3166,26 @@ export function startServer() {
   if (HOST) server.listen(PORT, HOST, onListening);
   else server.listen(PORT, onListening);
   const timer = setInterval(() => {
-    try { agentHistory.prune(); } catch (error) { console.error('[agent-history-cleanup]', error); }
+    agentHistory.prune().catch((error) => console.error('[agent-history-cleanup]', error));
     backupIfDue().catch((error) => console.error('[backup]', error));
   }, 60 * 60 * 1000);
   timer.unref();
   const expirePaymentsSafely = () => {
-    try {
-      const expiredCount = paymentOperations.expirePendingPayments();
+    paymentOperations.expirePendingPayments().then((expiredCount) => {
       if (expiredCount) backupIfDue().catch((error) => console.error('[payment-expiry-backup]', error));
-    } catch (error) {
+    }).catch((error) => {
       console.error('[payment-expiry]', error);
-    }
+    });
   };
   expirePaymentsSafely();
   const paymentExpiryTimer = setInterval(expirePaymentsSafely, 5000);
   paymentExpiryTimer.unref();
   const completeDueSafely = () => {
-    try {
-      const completedCount = completeDueBookings();
+    completeDueBookings().then((completedCount) => {
       if (completedCount) backupIfDue().catch((error) => console.error('[backup]', error));
-    } catch (error) {
+    }).catch((error) => {
       console.error('[booking-auto-complete]', error);
-    }
+    });
   };
   completeDueSafely();
   const completionTimer = setInterval(completeDueSafely, 60 * 1000);

@@ -43,8 +43,15 @@ function activeBookingsForDay(date, excludeBookingId = null) {
   return [...merged.values()];
 }
 
+function bookingDuration(booking) {
+  const duration = Number(booking.duration);
+  if (Number.isInteger(duration) && duration > 0 && duration <= 480) return duration;
+  return timeToMin(booking.endTime) - timeToMin(booking.startTime);
+}
+
 function overlappingBookings(bookings, startMin, endMin) {
-  return bookings.filter((booking) => startMin < timeToMin(booking.endTime) && endMin > timeToMin(booking.startTime));
+  return bookings.filter((booking) => startMin < timeToMin(booking.startTime) + bookingDuration(booking)
+    && endMin > timeToMin(booking.startTime));
 }
 
 function availableRoomNumber(bookings, startMin, endMin, roomCount) {
@@ -220,10 +227,7 @@ export const bookingService = {
       // Khóa cả đến mốc slot tiếp theo, nhưng vẫn lưu giờ kết thúc trị liệu thực tế.
       const hasConflict = existingBookings.some((b) => {
         const bStart = timeToMin(b.startTime);
-        const storedDuration = Number(b.duration);
-        const actualDuration = Number.isInteger(storedDuration) && storedDuration > 0
-          ? storedDuration
-          : timeToMin(b.endTime) - bStart;
+        const actualDuration = bookingDuration(b);
         const bLockEnd = bookingLockEndMinute(bStart, actualDuration, slotStep);
         return startMin < bLockEnd && lockEndMin > bStart;
       });
@@ -371,10 +375,7 @@ export const bookingService = {
 
       const hasConflict = staffBookings.some((b) => {
         const bStart = timeToMin(b.startTime);
-        const storedDuration = Number(b.duration);
-        const actualDuration = Number.isInteger(storedDuration) && storedDuration > 0
-          ? storedDuration
-          : timeToMin(b.endTime) - bStart;
+        const actualDuration = bookingDuration(b);
         const bLockEnd = bookingLockEndMinute(bStart, actualDuration, slotStep);
         return startMin < bLockEnd && lockEndMin > bStart;
       });

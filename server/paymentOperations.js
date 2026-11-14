@@ -131,13 +131,13 @@ function phoneSafeContent(value) {
   return String(value || '').replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 1000);
 }
 
-function canStillConfirm(booking, eventAt, findConflict, hasRoomConflict) {
+async function canStillConfirm(booking, eventAt, findConflict, hasRoomConflict) {
   const createdAt = Date.parse(booking.createdAt || '');
   const expiresAt = Date.parse(booking.paymentExpiresAt || '');
   return booking.status === 'Pending' && booking.paymentStatus === 'awaiting_payment'
     && Number.isFinite(createdAt) && Number.isFinite(expiresAt)
     && eventAt >= createdAt - 5000 && eventAt <= expiresAt
-    && !findConflict(booking) && !hasRoomConflict(booking);
+    && !await findConflict(booking) && !await hasRoomConflict(booking);
 }
 
 function paymentRecord(booking, { amount, transactionId, reference, at, issue }) {
@@ -157,11 +157,11 @@ function paymentRecord(booking, { amount, transactionId, reference, at, issue })
 
 export function createPaymentOperations({ db, getRecord, parseRows, saveRecord, nextVersion, transaction,
   withAudit, findConflict, hasRoomConflict, finalizeReschedulePayment, HttpError, env = process.env }) {
-  migratePaymentDatabase(db);
-  const insertTransaction = db.prepare(`INSERT OR IGNORE INTO payment_transactions(
+  if (!db.async) migratePaymentDatabase(db);
+  const insertTransaction = db.prepare(`INSERT INTO payment_transactions(
     provider, provider_transaction_id, booking_id, payment_code, transfer_amount, transfer_type,
     transfer_content, reference_code, transaction_at, status, reason, received_at
-  ) VALUES ('sepay', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  ) VALUES ('sepay', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`);
 
   const authenticateWebhook = (authorization) => {
     const config = paymentConfig(env);
@@ -174,27 +174,27 @@ export function createPaymentOperations({ db, getRecord, parseRows, saveRecord, 
     return left.length === right.length && timingSafeEqual(left, right);
   };
 
-  function expirePendingPayments(now = new Date()) {
+  async function expirePendingPayments(now = new Date()) {
     const nowIso = now.toISOString();
-    const candidates = parseRows('bookings').filter((booking) => (booking.status === 'Pending'
+    const candidates = (await parseRows('bookings')).filter((booking) => (booking.status === 'Pending'
       && booking.paymentStatus === 'awaiting_payment'
       && (!Number.isFinite(Date.parse(booking.paymentExpiresAt || '')) || Date.parse(booking.paymentExpiresAt || '') <= now.getTime()))
       || (booking.reschedulePaymentRequest && Date.parse(booking.reschedulePaymentRequest.expiresAt || '') <= now.getTime()));
     if (!candidates.length) return 0;
-    transaction(() => {
+    await transaction(async () => {
       for (const candidate of candidates) {
-        const booking = getRecord('bookings', candidate.id);
+        const booking = await getRecord('bookings', candidate.id);
         if (!booking) continue;
         const rescheduleRequest = booking.reschedulePaymentRequest;
         if (rescheduleRequest && Date.parse(rescheduleRequest.expiresAt || '') <= now.getTime()) {
-          releaseRescheduleCouponReservation(rescheduleRequest);
-          saveRecord('bookings', { ...booking, reschedulePaymentRequest: null,
+          await releaseRescheduleCouponReservation(rescheduleRequest);
+          await saveRecord('bookings', { ...booking, reschedulePaymentRequest: null,
             lastReschedulePaymentStatus: 'expired', lastReschedulePaymentAt: nowIso,
             lastReschedulePaymentRequest: rescheduleRequest, updatedAt: nowIso });
-          if (rescheduleRequest.quoteId) db.prepare("UPDATE reschedule_quotes SET status = 'expired' WHERE id = ? AND status = 'pending'").run(rescheduleRequest.quoteId);
-          withAudit({ id: 'payment-expiry', role: 'system' }, 'booking.reschedule_payment.expired', booking.id,
+          if (rescheduleRequest.quoteId) await db.prepare("UPDATE reschedule_quotes SET status = 'expired' WHERE id = ? AND status = 'pending'").run(rescheduleRequest.quoteId);
+          await withAudit({ id: 'payment-expiry', role: 'system' }, 'booking.reschedule_payment.expired', booking.id,
             { quoteId: rescheduleRequest.quoteId, amount: rescheduleRequest.amount, expiresAt: rescheduleRequest.expiresAt });
-          nextVersion('bookings');
+          await nextVersion('bookings');
           continue;
         }
         if (booking.status !== 'Pending' || booking.paymentStatus !== 'awaiting_payment'
@@ -208,35 +208,35 @@ export function createPaymentOperations({ db, getRecord, parseRows, saveRecord, 
           updatedAt: nowIso,
           statusHistory: [...(booking.statusHistory || []), { status: 'Cancelled', at: nowIso, by: 'system', reason: 'payment_expired' }],
         };
-        releaseCouponForUnpaidBooking(booking);
-        saveRecord('bookings', updated);
-        withAudit({ id: 'payment-expiry', role: 'system' }, 'booking.payment.expired', booking.id,
+        await releaseCouponForUnpaidBooking(booking);
+        await saveRecord('bookings', updated);
+        await withAudit({ id: 'payment-expiry', role: 'system' }, 'booking.payment.expired', booking.id,
           { paymentCode: booking.paymentCode, expiresAt: booking.paymentExpiresAt });
       }
-      nextVersion('bookings');
+      await nextVersion('bookings');
     });
     return candidates.length;
   }
 
-  function releaseCouponForUnpaidBooking(booking) {
+  async function releaseCouponForUnpaidBooking(booking) {
     if (!booking || booking.paymentStatus !== 'awaiting_payment' || !booking.promoCode) return false;
-    const coupon = parseRows('promotions').find((row) => row.code?.toUpperCase() === booking.promoCode.toUpperCase());
+    const coupon = (await parseRows('promotions')).find((row) => row.code?.toUpperCase() === booking.promoCode.toUpperCase());
     if (!coupon || Number(coupon.usedCount || 0) <= 0) return false;
-    saveRecord('promotions', { ...coupon, usedCount: Number(coupon.usedCount || 0) - 1 });
-    nextVersion('promotions');
+    await saveRecord('promotions', { ...coupon, usedCount: Number(coupon.usedCount || 0) - 1 });
+    await nextVersion('promotions');
     return true;
   }
 
-  function releaseRescheduleCouponReservation(request) {
+  async function releaseRescheduleCouponReservation(request) {
     if (!request?.reservedPromoId) return false;
-    const coupon = getRecord('promotions', request.reservedPromoId);
+    const coupon = await getRecord('promotions', request.reservedPromoId);
     if (!coupon || Number(coupon.usedCount || 0) <= 0) return false;
-    saveRecord('promotions', { ...coupon, usedCount: Number(coupon.usedCount || 0) - 1 });
-    nextVersion('promotions');
+    await saveRecord('promotions', { ...coupon, usedCount: Number(coupon.usedCount || 0) - 1 });
+    await nextVersion('promotions');
     return true;
   }
 
-  function handleWebhook(payload) {
+  async function handleWebhook(payload) {
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new HttpError(400, 'Dữ liệu webhook SePay không hợp lệ.', 'SEPAY_PAYLOAD_INVALID');
     const providerId = transactionIdValue(payload.id);
     const amount = Number(payload.transferAmount);
@@ -251,11 +251,11 @@ export function createPaymentOperations({ db, getRecord, parseRows, saveRecord, 
 
     const config = paymentConfig(env);
     const receivedAt = new Date().toISOString();
-    return transaction(() => {
+    return transaction(async () => {
       // Classify against the current booking while the write lock is held. This
       // prevents two near-simultaneous transfers from both seeing "unpaid" and
       // incorrectly treating the second transfer as the payment that confirms it.
-      const bookings = parseRows('bookings');
+      const bookings = await parseRows('bookings');
       const suppliedCode = String(payload.code || '').trim().toUpperCase();
       const matchedBooking = bookings.find((booking) => codeInText(content, booking.paymentCode)
         || (suppliedCode !== '' && suppliedCode === String(booking.paymentCode || '').toUpperCase())) || null;
@@ -273,9 +273,9 @@ export function createPaymentOperations({ db, getRecord, parseRows, saveRecord, 
           || eventMilliseconds > Date.parse(adjustment.expiresAt || '')) {
           status = 'late'; reason = 'Giao dịch phần chênh lệch không phát sinh trong thời hạn giữ chỗ 3 phút.';
         } else if (matchedBooking.status !== 'Confirmed' || !['paid', 'paid_with_issue'].includes(matchedBooking.paymentStatus)
-          || findConflict({ staffId: adjustment.change.staffId, date: adjustment.change.date,
+          || await findConflict({ staffId: adjustment.change.staffId, date: adjustment.change.date,
             startTime: adjustment.change.startTime, durationMinutes: matchedBooking.duration, excludeId: matchedBooking.id })
-          || hasRoomConflict({ ...matchedBooking, ...adjustment.change })) {
+          || await hasRoomConflict({ ...matchedBooking, ...adjustment.change })) {
           status = 'slot_taken'; reason = 'Khung giờ mới không còn khả dụng; lịch cũ vẫn được giữ.';
         } else { status = 'paid'; reason = ''; }
       }
@@ -293,7 +293,7 @@ export function createPaymentOperations({ db, getRecord, parseRows, saveRecord, 
         status = 'overpaid'; reason = 'Số tiền chuyển vượt tổng thanh toán; cần nhân viên đối soát.';
       } else if (!eventMilliseconds) {
         status = 'late'; reason = 'Không đọc được thời điểm giao dịch để xác minh thời hạn giữ lịch.';
-      } else if (!canStillConfirm(matchedBooking, eventMilliseconds,
+      } else if (!await canStillConfirm(matchedBooking, eventMilliseconds,
         (booking) => findConflict({ staffId: booking.staffId, date: booking.date, startTime: booking.startTime, durationMinutes: booking.duration, excludeId: booking.id }),
         (booking) => hasRoomConflict(booking))) {
         status = Date.parse(matchedBooking.paymentExpiresAt || '') < eventMilliseconds ? 'late' : 'slot_taken';
@@ -301,22 +301,22 @@ export function createPaymentOperations({ db, getRecord, parseRows, saveRecord, 
       } else {
         status = 'paid'; reason = '';
       }
-      const inserted = insertTransaction.run(providerId, matchedBooking?.id || null, paymentCode,
+      const inserted = await insertTransaction.run(providerId, matchedBooking?.id || null, paymentCode,
         amount, transferType, content, referenceCode, eventMilliseconds == null ? null : new Date(eventMilliseconds).toISOString(),
         status, reason, receivedAt);
       if (inserted.changes === 0) return { success: true, duplicate: true, status: 'duplicate' };
       if (!matchedBooking) return { success: true, duplicate: false, status };
 
-      const booking = getRecord('bookings', matchedBooking.id);
+      const booking = await getRecord('bookings', matchedBooking.id);
       if (!booking) return { success: true, duplicate: false, status: 'unmatched' };
       const paidAt = eventMilliseconds == null ? receivedAt : new Date(eventMilliseconds).toISOString();
       const now = new Date().toISOString();
       if (status === 'paid' && booking.reschedulePaymentRequest && ['paid', 'paid_with_issue'].includes(booking.paymentStatus)) {
         const request = booking.reschedulePaymentRequest;
-        finalizeReschedulePayment(booking, request, {
+        await finalizeReschedulePayment(booking, request, {
           amount, transactionId: providerId, reference: referenceCode, at: paidAt,
         });
-        withAudit({ id: 'sepay-webhook', role: 'system' }, 'booking.rescheduled.payment_confirmed', booking.id,
+        await withAudit({ id: 'sepay-webhook', role: 'system' }, 'booking.rescheduled.payment_confirmed', booking.id,
           { providerTransactionId: providerId, amount, paymentCode: booking.paymentCode, quoteId: request.quoteId });
       } else if (status === 'paid' && booking.status === 'Pending' && booking.paymentStatus === 'awaiting_payment') {
         const updated = { ...booking, status: 'Confirmed', paymentStatus: 'paid', paymentPaidAt: paidAt,
@@ -336,10 +336,10 @@ export function createPaymentOperations({ db, getRecord, parseRows, saveRecord, 
           },
           statusHistory: [...(booking.statusHistory || []), { status: 'Confirmed', at: now, by: 'sepay-webhook', reason: 'Đã nhận đủ thanh toán.' }],
           updatedAt: now };
-        saveRecord('bookings', updated);
-        withAudit({ id: 'sepay-webhook', role: 'system' }, 'booking.payment.confirmed', booking.id,
+        await saveRecord('bookings', updated);
+        await withAudit({ id: 'sepay-webhook', role: 'system' }, 'booking.payment.confirmed', booking.id,
           { providerTransactionId: providerId, amount, paymentCode: booking.paymentCode });
-        nextVersion('bookings');
+        await nextVersion('bookings');
       } else if (status === 'underpaid' || status === 'overpaid' || status === 'late' || status === 'slot_taken' || status === 'extra_payment') {
         const alreadyPaid = ['paid', 'paid_with_issue'].includes(booking.paymentStatus);
         const failedReschedule = Boolean(booking.reschedulePaymentRequest);
@@ -360,15 +360,15 @@ export function createPaymentOperations({ db, getRecord, parseRows, saveRecord, 
             by: 'sepay-webhook', reason: `payment_${status}` }] } : {}),
           updatedAt: now,
         };
-        if (cancelled) releaseCouponForUnpaidBooking(booking);
+        if (cancelled) await releaseCouponForUnpaidBooking(booking);
         if (failedReschedule && booking.reschedulePaymentRequest.quoteId) {
-          releaseRescheduleCouponReservation(booking.reschedulePaymentRequest);
-          db.prepare("UPDATE reschedule_quotes SET status = 'expired' WHERE id = ? AND status = 'pending'").run(booking.reschedulePaymentRequest.quoteId);
+          await releaseRescheduleCouponReservation(booking.reschedulePaymentRequest);
+          await db.prepare("UPDATE reschedule_quotes SET status = 'expired' WHERE id = ? AND status = 'pending'").run(booking.reschedulePaymentRequest.quoteId);
         }
-        saveRecord('bookings', updated);
-        withAudit({ id: 'sepay-webhook', role: 'system' }, `booking.payment.${status}`, booking.id,
+        await saveRecord('bookings', updated);
+        await withAudit({ id: 'sepay-webhook', role: 'system' }, `booking.payment.${status}`, booking.id,
           { providerTransactionId: providerId, amount, expectedAmount: booking.finalPrice, paymentCode: booking.paymentCode });
-        nextVersion('bookings');
+        await nextVersion('bookings');
       }
       return { success: true, duplicate: false, status, bookingId: booking.id };
     });
@@ -402,31 +402,38 @@ export function createPaymentOperations({ db, getRecord, parseRows, saveRecord, 
     };
   }
 
-  function reconciliation() {
-    const events = db.prepare(`SELECT provider_transaction_id, booking_id, payment_code, transfer_amount, transfer_type,
+  async function reconciliation() {
+    const rows = await db.prepare(`SELECT provider_transaction_id, booking_id, payment_code, transfer_amount, transfer_type,
       transfer_content, reference_code, transaction_at, status, reason, received_at
-      FROM payment_transactions ORDER BY received_at DESC LIMIT 200`).all().map((row) => ({
+      FROM payment_transactions ORDER BY received_at DESC LIMIT 200`).all();
+    const bookingRows = await parseRows('bookings');
+    const bookingById = new Map(bookingRows.map((booking) => [booking.id, booking]));
+    const events = rows.map((row) => {
+      const booking = row.booking_id ? bookingById.get(row.booking_id) : null;
+      let refundStatus = null;
+      if (booking) {
+        const request = booking.refundRequest;
+        if (request?.sourceTransactionId === row.provider_transaction_id) refundStatus = request.status;
+        else if (booking.paymentRecords?.some((record) => record.type === 'refund'
+          && record.sourceTransactionId === row.provider_transaction_id)) refundStatus = 'completed';
+      }
+      return {
       providerTransactionId: row.provider_transaction_id, bookingId: row.booking_id, paymentCode: row.payment_code,
       amount: row.transfer_amount, transferType: row.transfer_type, content: row.transfer_content,
       referenceCode: row.reference_code, transactionAt: row.transaction_at, status: row.status,
       reason: row.reason, receivedAt: row.received_at,
-      bookingCode: row.booking_id ? getRecord('bookings', row.booking_id)?.code || null : null,
-      refundStatus: row.booking_id ? (() => {
-        const booking = getRecord('bookings', row.booking_id);
-        const request = booking?.refundRequest;
-        if (request?.sourceTransactionId === row.provider_transaction_id) return request.status;
-        return booking?.paymentRecords?.some((record) => record.type === 'refund'
-          && record.sourceTransactionId === row.provider_transaction_id) ? 'completed' : null;
-      })() : null,
-    }));
-    const refunds = parseRows('bookings').filter((booking) => booking.refundRequest).map((booking) => ({
+      bookingCode: booking?.code || null,
+      refundStatus,
+      };
+    });
+    const refunds = bookingRows.filter((booking) => booking.refundRequest).map((booking) => ({
       bookingId: booking.id, bookingCode: booking.code, customerName: booking.customerName,
       customerPhone: booking.customerPhone, serviceName: booking.serviceName, amount: booking.refundRequest.amount,
       paidAmount: booking.refundRequest.paidAmount, kind: booking.refundRequest.kind || 'customer_cancellation_50', status: booking.refundRequest.status,
       requestedAt: booking.refundRequest.requestedAt, recipient: booking.refundRequest.recipient,
       referenceCode: booking.refundRequest.referenceCode || null,
     }));
-    const bookings = parseRows('bookings')
+    const bookings = bookingRows
       .filter((booking) => booking.paymentCode)
       .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))
       .slice(0, 300)
@@ -437,17 +444,17 @@ export function createPaymentOperations({ db, getRecord, parseRows, saveRecord, 
     return { events, refunds, bookings, payment: publicPaymentConfig(env) };
   }
 
-  function linkUnmatchedTransaction({ providerTransactionId, bookingId, actor }) {
+  async function linkUnmatchedTransaction({ providerTransactionId, bookingId, actor }) {
     const id = transactionIdValue(providerTransactionId);
     if (!id) throw new HttpError(400, 'Mã giao dịch không hợp lệ.', 'PAYMENT_TRANSACTION_INVALID');
-    const result = transaction(() => {
-      const event = db.prepare(`SELECT provider_transaction_id, booking_id, payment_code, transfer_amount,
+    return transaction(async () => {
+      const event = await db.prepare(`SELECT provider_transaction_id, booking_id, payment_code, transfer_amount,
         transfer_type, reference_code, transaction_at, received_at, status, reason FROM payment_transactions
         WHERE provider = 'sepay' AND provider_transaction_id = ?`).get(id);
       if (!event || event.status !== 'unmatched' || event.booking_id) {
         throw new HttpError(409, 'Giao dịch này đã được ghép hoặc không thuộc nhóm sai/thiếu mã.', 'PAYMENT_EVENT_NOT_LINKABLE');
       }
-      const booking = getRecord('bookings', String(bookingId || ''));
+      const booking = await getRecord('bookings', String(bookingId || ''));
       if (!booking?.paymentCode) throw new HttpError(404, 'Không tìm thấy đơn QR để đối soát.', 'BOOKING_NOT_FOUND');
       const now = new Date().toISOString();
       const reason = `Nhân viên đã gắn thủ công giao dịch sai/thiếu mã vào đơn ${booking.code}. Đơn không được xác nhận và không hoàn tiền tự động.`;
@@ -474,22 +481,21 @@ export function createPaymentOperations({ db, getRecord, parseRows, saveRecord, 
           by: actor.id, reason: 'payment_unmatched' }] } : {}),
         updatedAt: now,
       };
-      const updateEvent = db.prepare(`UPDATE payment_transactions SET booking_id = ?, reason = ?
+      const updateEvent = await db.prepare(`UPDATE payment_transactions SET booking_id = ?, reason = ?
         WHERE provider = 'sepay' AND provider_transaction_id = ? AND status = 'unmatched' AND booking_id IS NULL`)
         .run(booking.id, reason, id);
       if (!updateEvent.changes) throw new HttpError(409, 'Giao dịch vừa được đối soát ở nơi khác.', 'PAYMENT_EVENT_NOT_LINKABLE');
-      if (cancelPending) releaseCouponForUnpaidBooking(booking);
+      if (cancelPending) await releaseCouponForUnpaidBooking(booking);
       if (failedReschedule) {
-        releaseRescheduleCouponReservation(booking.reschedulePaymentRequest);
-        db.prepare("UPDATE reschedule_quotes SET status = 'expired' WHERE id = ? AND status = 'pending'").run(booking.reschedulePaymentRequest.quoteId);
+        await releaseRescheduleCouponReservation(booking.reschedulePaymentRequest);
+        await db.prepare("UPDATE reschedule_quotes SET status = 'expired' WHERE id = ? AND status = 'pending'").run(booking.reschedulePaymentRequest.quoteId);
       }
-      saveRecord('bookings', updated);
-      nextVersion('bookings');
-      withAudit(actor, 'booking.payment.unmatched_linked', booking.id, { providerTransactionId: id,
+      await saveRecord('bookings', updated);
+      await nextVersion('bookings');
+      await withAudit(actor, 'booking.payment.unmatched_linked', booking.id, { providerTransactionId: id,
         amount: Number(event.transfer_amount), noRefund: true, bookingCode: booking.code });
       return updated;
     });
-    return result;
   }
 
   function markRefundComplete(booking, { referenceCode, note, actor }) {
@@ -520,14 +526,14 @@ export function createPaymentOperations({ db, getRecord, parseRows, saveRecord, 
     if (!id || !Number.isSafeInteger(refundAmount) || refundAmount <= 0) {
       throw new HttpError(400, 'Mã giao dịch và số tiền hoàn phải hợp lệ.', 'REFUND_AMOUNT_INVALID');
     }
-    return transaction(() => {
-      const event = db.prepare(`SELECT booking_id, transfer_amount, status, provider_transaction_id
+    return transaction(async () => {
+      const event = await db.prepare(`SELECT booking_id, transfer_amount, status, provider_transaction_id
         FROM payment_transactions WHERE provider = 'sepay' AND provider_transaction_id = ?`).get(id);
       if (!event || !event.booking_id || !['overpaid', 'late', 'slot_taken', 'extra_payment'].includes(event.status)) {
         throw new HttpError(409, 'Chỉ giao dịch thừa, đến sau hạn, mất khung giờ hoặc chuyển lặp mới được đưa ra quyết định hoàn thủ công.', 'REFUND_EVENT_NOT_ELIGIBLE');
       }
       if (refundAmount > Number(event.transfer_amount)) throw new HttpError(409, 'Số tiền đề nghị hoàn không được vượt giao dịch đang đối soát.', 'REFUND_EXCEEDS_TRANSACTION');
-      const booking = getRecord('bookings', event.booking_id);
+      const booking = await getRecord('bookings', event.booking_id);
       if (!booking) throw new HttpError(404, 'Không tìm thấy đơn liên quan giao dịch.', 'BOOKING_NOT_FOUND');
       const records = Array.isArray(booking.paymentRecords) ? booking.paymentRecords : [];
       if (records.some((record) => record.type === 'refund' && record.sourceTransactionId === id)) {
@@ -548,9 +554,9 @@ export function createPaymentOperations({ db, getRecord, parseRows, saveRecord, 
         recipient: { bankName, accountHolder, accountNumber }, sourceTransactionId: id,
         note: String(note || 'Admin đã quyết định hoàn thủ công sau đối soát giao dịch.').trim().slice(0, 300) };
       const updated = { ...booking, refundRequest: request, updatedAt: now };
-      saveRecord('bookings', updated);
-      nextVersion('bookings');
-      withAudit(actor, 'booking.payment_issue.refund_requested', booking.id,
+      await saveRecord('bookings', updated);
+      await nextVersion('bookings');
+      await withAudit(actor, 'booking.payment_issue.refund_requested', booking.id,
         { providerTransactionId: id, amount: refundAmount, bookingCode: booking.code });
       return updated;
     });

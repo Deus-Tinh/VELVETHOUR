@@ -1,5 +1,5 @@
-# BLOCKED: server/server.js intentionally refuses production startup until the
-# SQLite-to-PostgreSQL adapter and tested data migration are complete.
+# Set DATABASE_URL in the Render dashboard to the internal URL of the PostgreSQL
+# database populated from a verified SQLite backup before the first deploy.
 services:
   - type: web
     name: serenity-api
@@ -13,14 +13,14 @@ services:
         value: 24.22.1
       - key: NODE_ENV
         value: production
-      - key: SERENITY_ALLOW_EPHEMERAL_STORAGE
-        value: "true"
+      - key: DATABASE_URL
+        sync: false
       - key: SERENITY_PROXY_TOKEN
         generateValue: true
       - key: SERENITY_INITIAL_ADMIN_EMAIL
-        value: admin@example.invalid
+        sync: false
       - key: SERENITY_INITIAL_ADMIN_PASSWORD
-        value: Tinh211006@
+        sync: false
       - key: SERENITY_INITIAL_ADMIN_NAME
         value: Demo Admin
       - key: VIETQR_DIRECT_ENABLED
