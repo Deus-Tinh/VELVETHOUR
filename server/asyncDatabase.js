@@ -114,6 +114,8 @@ class AsyncSqliteDatabase {
     });
   }
 
+  async acquireTransactionLock(_lock) {}
+
   async health() {
     await this.prepare('SELECT 1 AS ok').get();
     return true;
@@ -170,12 +172,10 @@ class AsyncPostgresDatabase {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
-      if (advisoryLock) {
-        const namespace = String(advisoryLock.namespace || 'serenity');
-        const key = String(advisoryLock.key || '');
-        await client.query('SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))', [namespace, key]);
-      }
-      const result = await this.#local.run(client, work);
+      const result = await this.#local.run(client, async () => {
+        if (advisoryLock) await this.acquireTransactionLock(advisoryLock);
+        return work();
+      });
       await client.query('COMMIT');
       return result;
     } catch (error) {
@@ -184,6 +184,12 @@ class AsyncPostgresDatabase {
     } finally {
       client.release();
     }
+  }
+
+  async acquireTransactionLock({ namespace = 'serenity', key = '' }) {
+    const client = this.#local.getStore();
+    if (!client) throw new Error('A transaction is required for an advisory lock.');
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))', [String(namespace), String(key)]);
   }
 
   async health() {
