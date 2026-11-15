@@ -7,7 +7,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createPostgresPool, runPostgresMigrations } from '../server/postgresDatabase.js';
 import { openAsyncDatabase } from '../server/asyncDatabase.js';
@@ -464,4 +464,86 @@ test('PostgreSQL staff permissions, decline requests and approved days off survi
   assert.equal(persistedBooking.staffId, 'st-04');
   assert.equal(persistedBooking.duration, 90);
   assert.ok((await readStaff()).daysOff.includes(date));
+});
+
+test('PostgreSQL monthly report reads real booking records with Admin-only access and no database writes', async () => {
+  const endpoint = '/api/admin/analytics/monthly';
+  const query = `${endpoint}?year=2096&month=02`;
+  const get = (url, cookie) => request('GET', url, undefined, cookie);
+  const staffCookie = await login('linh@example.invalid', TEST_PASSWORDS.staff);
+  const expiredToken = randomUUID();
+  await appPool.query('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES ($1, $2, $3)',
+    [createHash('sha256').update(expiredToken).digest('hex'), 'expired-test-user', 1]);
+
+  const payment = { id: 'pay_sepay_pg-monthly', type: 'payment', amount: 180000, at: '2096-01-31T17:00:00Z' };
+  const refund = { id: 'refund_pg-monthly', type: 'refund', amount: 65000, at: '2096-02-29T16:59:59.999Z' };
+  const completed = {
+    id: 'pg-monthly-completed', status: 'Completed', date: '2096-02-20',
+    serviceId: 'pg-monthly-retired', serviceName: 'Liệu trình đã ẩn', finalPrice: 300000,
+    customerName: 'Không công khai PostgreSQL', customerEmail: 'monthly-secret@example.invalid',
+    customerPhone: '0980000001', userId: 'private-user-key',
+    paymentRecords: [
+      payment, { ...payment }, refund, { ...refund },
+      { ...payment, id: 'pay_sepay_pg-bad', refundable: false },
+      { ...payment, id: 'pay_outside', at: '2096-02-29T17:00:00Z' },
+    ],
+  };
+  const cancelled = {
+    id: 'pg-monthly-cancelled', status: 'Cancelled', date: '2096-02-29',
+    serviceId: 'pg-monthly-retired', refundRequest: { status: 'pending', amount: 100000 },
+  };
+  const outside = {
+    id: 'pg-monthly-outside', status: 'Confirmed', date: '2096-03-02',
+    serviceId: 'pg-monthly-retired',
+    paymentRecords: [{ id: 'pg-monthly-deposit', type: 'deposit', amount: 50000, at: '2096-02-20T03:00:00Z' }],
+  };
+  for (const booking of [completed, cancelled, outside]) {
+    await appPool.query("INSERT INTO collection_records (collection, id, payload) VALUES ('bookings',$1,$2)",
+      [booking.id, JSON.stringify(booking)]);
+  }
+
+  const snapshot = async () => {
+    const tables = ['collection_records', 'collection_versions', 'payment_transactions', 'sessions', 'audit_log', 'metadata'];
+    return Promise.all(tables.map(async (table) => (await appPool.query(
+      `SELECT to_jsonb(t)::text AS row FROM ${table} t ORDER BY 1`,
+    )).rows));
+  };
+  const beforeReport = await snapshot();
+  assert.equal((await get(query)).status, 401);
+  assert.equal((await get(query, `serenity.sid=${expiredToken}`)).status, 401);
+  assert.equal((await get(query, staffCookie)).status, 403);
+  assert.equal((await get(query, customerCookie)).status, 403);
+  for (const invalid of ['year=2096&month=13', 'year=1999&month=2', 'year=2096.0&month=2', 'year=2096',
+    'year=2096&month=2&month=3']) {
+    const response = await get(`${endpoint}?${invalid}`, adminCookie);
+    assert.equal(response.status, 400);
+    assert.equal(response.payload.code, 'ANALYTICS_PERIOD_INVALID');
+  }
+
+  const response = await get(query, adminCookie);
+  assert.equal(response.status, 200, JSON.stringify(response.payload));
+  const { analytics } = response.payload;
+  assert.equal(analytics.timeZone, 'Asia/Ho_Chi_Minh');
+  assert.equal(analytics.dailyCashFlow.length, 29);
+  assert.deepEqual(analytics.metrics, {
+    collected: 230000, refunded: 65000, netCashFlow: 165000,
+    completedBookings: 1, cancelledBookings: 1, customersServed: 1, averageBookingValue: 300000,
+  });
+  assert.equal(analytics.dailyCashFlow[0].collected, 180000);
+  assert.equal(analytics.dailyCashFlow[19].collected, 50000);
+  assert.equal(analytics.dailyCashFlow.at(-1).revenue, -65000);
+  assert.deepEqual(analytics.topServices, [
+    { id: 'pg-monthly-retired', name: 'Liệu trình đã ẩn', count: 1, share: 100, revenue: 165000 },
+  ]);
+  assert.doesNotMatch(JSON.stringify(analytics),
+    /Không công khai PostgreSQL|monthly-secret@example\.invalid|0980000001|private-user-key|paymentRecords|pg-monthly-completed/);
+  assert.deepEqual(await snapshot(), beforeReport, 'success and rejected requests must not change database rows');
+
+  completed.paymentRecords.push({ ...payment, amount: 175000 });
+  await appPool.query("UPDATE collection_records SET payload=$1 WHERE collection='bookings' AND id=$2",
+    [JSON.stringify(completed), completed.id]);
+  const conflict = await get(query, adminCookie);
+  assert.equal(conflict.status, 409);
+  assert.equal(conflict.payload.code, 'ANALYTICS_DATA_CONFLICT');
+  assert.equal(conflict.payload.analytics, undefined);
 });

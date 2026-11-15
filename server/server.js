@@ -34,6 +34,7 @@ import {
   recommendServices, redactChatText, requestAiCriteria,
 } from './chatbot.js';
 import { isStrongPassword, schemas, validate } from '../assets/js/core/validators.js';
+import { aggregateMonthlyAnalytics, AnalyticsDataError, parseAnalyticsPeriod } from './monthlyAnalytics.js';
 import { buildMusicManifest } from './musicLibrary.js';
 import { assertPersistentSQLiteStorage } from './persistentStorage.js';
 import { assertSqliteIntegrity, createSqliteBackup } from './sqliteMaintenance.js';
@@ -989,18 +990,18 @@ function cookieValue(request, key) {
   }
   return '';
 }
-async function actorFrom(request) {
+async function actorFrom(request, { cleanupInvalidSession = true } = {}) {
   const token = cookieValue(request, 'serenity.sid');
   if (!token) return null;
   const tokenHash = createHash('sha256').update(token).digest('hex');
   const stored = await q.sessionByHash.get(tokenHash);
   if (!stored || stored.expires_at <= Date.now()) {
-    if (stored) await q.deleteSession.run(tokenHash);
+    if (stored && cleanupInvalidSession) await q.deleteSession.run(tokenHash);
     return null;
   }
   const user = await getRecord('users', stored.user_id);
   if (!user || user.active === false) {
-    await q.deleteSession.run(tokenHash);
+    if (cleanupInvalidSession) await q.deleteSession.run(tokenHash);
     return null;
   }
   return actorView(user);
@@ -1011,8 +1012,8 @@ async function createSession(userId, response) {
   await q.insertSession.run(tokenHash, userId, Date.now() + SESSION_TTL_MS);
   setSessionCookie(response, token);
 }
-async function requireActor(request, roles = []) {
-  const actor = await actorFrom(request);
+async function requireActor(request, roles = [], options) {
+  const actor = await actorFrom(request, options);
   if (!actor) throw new HttpError(401, 'Vui lòng đăng nhập để tiếp tục.', 'UNAUTHORIZED');
   if (roles.length && !roles.includes(actor.role)) throw new HttpError(403, 'Tài khoản không có quyền thực hiện thao tác này.', 'FORBIDDEN');
   return actor;
@@ -1908,6 +1909,19 @@ async function routeApi(request, response, url) {
     const result = await paymentOperations.handleWebhook(body);
     await backupIfDue();
     return respond(response, 200, result);
+  }
+  if (method === 'GET' && pathname === '/api/admin/analytics/monthly') {
+    await requireActor(request, ['admin'], { cleanupInvalidSession: false });
+    const period = parseAnalyticsPeriod(url.searchParams);
+    if (!period) throw new HttpError(400, 'Tháng hoặc năm không hợp lệ.', 'ANALYTICS_PERIOD_INVALID');
+    const bookings = await parseRows('bookings');
+    try {
+      const analytics = aggregateMonthlyAnalytics({ bookings, ...period });
+      return respond(response, 200, { analytics });
+    } catch (error) {
+      if (error instanceof AnalyticsDataError) throw new HttpError(409, error.message, 'ANALYTICS_DATA_CONFLICT');
+      throw error;
+    }
   }
   if (method === 'GET' && pathname === '/api/admin/payments/reconciliation') {
     await requireActor(request, ['admin']);

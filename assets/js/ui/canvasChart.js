@@ -31,9 +31,15 @@ export function drawRevenueChart(canvasId, dailyStats = []) {
     return;
   }
 
-  const maxRev = Math.max(...dailyStats.map((d) => d.revenue), 1000000);
+  const revenue = dailyStats.map((row) => Number(row.revenue) || 0);
+  const maxRev = Math.max(...revenue, 1000000);
+  const minRev = Math.min(...revenue, 0);
+  const range = maxRev - minRev;
   const chartW = w - padLeft - padRight;
   const chartH = h - padTop - padBottom;
+
+  const valueY = (value) => padTop + ((maxRev - value) / range) * chartH;
+  const zeroY = valueY(0);
 
   // Vẽ lưới ngang
   ctx.strokeStyle = 'rgba(0, 0, 0, 0.06)';
@@ -41,7 +47,7 @@ export function drawRevenueChart(canvasId, dailyStats = []) {
   const gridLines = 4;
   for (let i = 0; i <= gridLines; i++) {
     const y = padTop + (chartH / gridLines) * i;
-    const val = maxRev - (maxRev / gridLines) * i;
+    const val = maxRev - (range / gridLines) * i;
     ctx.beginPath();
     ctx.moveTo(padLeft, y);
     ctx.lineTo(w - padRight, y);
@@ -53,11 +59,19 @@ export function drawRevenueChart(canvasId, dailyStats = []) {
     ctx.fillText(`${Math.round(val / 1000)}k`, padLeft - 8, y + 3);
   }
 
+  if (minRev < 0) {
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.22)';
+    ctx.beginPath();
+    ctx.moveTo(padLeft, zeroY);
+    ctx.lineTo(w - padRight, zeroY);
+    ctx.stroke();
+  }
+
   // Tọa độ các điểm
   const points = dailyStats.map((d, idx) => {
     const x = padLeft + (chartW / (dailyStats.length - 1 || 1)) * idx;
-    const y = padTop + chartH - (d.revenue / maxRev) * chartH;
-    return { x, y, ...d };
+    const y = valueY(revenue[idx]);
+    return { ...d, x, y };
   });
 
   // Vẽ vùng gradient bên dưới đường
@@ -66,9 +80,9 @@ export function drawRevenueChart(canvasId, dailyStats = []) {
   grad.addColorStop(1, 'rgba(102, 204, 112, 0.0)');
 
   ctx.beginPath();
-  ctx.moveTo(points[0].x, h - padBottom);
+  ctx.moveTo(points[0].x, zeroY);
   points.forEach((p) => ctx.lineTo(p.x, p.y));
-  ctx.lineTo(points[points.length - 1].x, h - padBottom);
+  ctx.lineTo(points[points.length - 1].x, zeroY);
   ctx.closePath();
   ctx.fillStyle = grad;
   ctx.fill();
@@ -85,7 +99,8 @@ export function drawRevenueChart(canvasId, dailyStats = []) {
   ctx.stroke();
 
   // Vẽ các chấm điểm và nhãn ngày
-  points.forEach((p) => {
+  const labelStep = Math.max(1, Math.ceil((points.length * 25) / Math.max(1, chartW)));
+  points.forEach((p, index) => {
     ctx.beginPath();
     ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
     ctx.fillStyle = '#fff';
@@ -94,6 +109,8 @@ export function drawRevenueChart(canvasId, dailyStats = []) {
     ctx.lineWidth = 2;
     ctx.stroke();
 
+    const last = points.length - 1;
+    if (index !== last && (index % labelStep !== 0 || points[last].x - p.x < 25)) return;
     // Nhãn ngày trục X
     ctx.fillStyle = '#666';
     ctx.font = '11px sans-serif';
@@ -103,6 +120,6 @@ export function drawRevenueChart(canvasId, dailyStats = []) {
     // Hiển thị số lượng booking bên dưới nhãn ngày
     ctx.fillStyle = '#999';
     ctx.font = '9px sans-serif';
-    ctx.fillText(`${p.count} lịch`, p.x, h - padBottom + 30);
+    if (Number.isFinite(p.count)) ctx.fillText(`${p.count} lịch`, p.x, h - padBottom + 30);
   });
 }

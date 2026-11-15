@@ -438,6 +438,10 @@ export const apiClient = {
     return result;
   },
   async getBookingInvoice(id) { return request(`/bookings/${encodeURIComponent(id)}/invoice`); },
+  async getMonthlyAnalytics(year, month) {
+    const query = new URLSearchParams({ year: String(year), month: String(month) });
+    return request(`/admin/analytics/monthly?${query}`);
+  },
   async getPaymentReconciliation() { return request('/admin/payments/reconciliation'); },
   async linkUnmatchedPayment({ providerTransactionId, bookingId }) {
     const result = await request('/admin/payments/reconcile-unmatched', {
