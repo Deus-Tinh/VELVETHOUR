@@ -47,10 +47,42 @@ function serviceKey(booking) {
   return booking.serviceName ? `name:${booking.serviceName}` : 'unknown';
 }
 
-function customerKey(booking) {
+function customerPhoneKey(booking) {
+  const phone = String(booking.customerPhone || '').trim().replace(/[\s().-]/g, '').replace(/^\+?84(?=\d{9}$)/, '0');
+  return /^0[35789]\d{8}$/.test(phone) ? phone : '';
+}
+
+function customerNameKey(booking) {
+  return String(booking.customerName || '').normalize('NFC').trim().replace(/\s+/g, ' ').toLocaleLowerCase('vi');
+}
+
+function accountsByBookingPhone(bookings) {
+  const accounts = new Map();
+  for (const booking of bookings) {
+    if (!booking.userId) continue;
+    const phone = customerPhoneKey(booking);
+    if (!phone) continue;
+
+    const contact = accounts.get(phone) || { userId: booking.userId, names: new Set(), shared: false };
+    if (contact.userId !== booking.userId) contact.shared = true;
+    const name = customerNameKey(booking);
+    if (name) contact.names.add(name);
+    accounts.set(phone, contact);
+  }
+  return accounts;
+}
+
+function customerKey(booking, accounts) {
   if (booking.userId) return `user:${booking.userId}`;
-  const phone = String(booking.customerPhone || '').replace(/\D/g, '').replace(/^84(?=\d{9}$)/, '0');
-  return phone ? `phone:${phone}` : `booking:${booking.id}`;
+  const phone = customerPhoneKey(booking);
+  if (!phone) return `booking:${booking.id}`;
+
+  const name = customerNameKey(booking);
+  const account = accounts.get(phone);
+  if (account && !account.shared && (!name || !account.names.size || account.names.has(name))) {
+    return `user:${account.userId}`;
+  }
+  return `guest:${phone}:${name}`;
 }
 
 function postedMovement(record) {
@@ -121,6 +153,8 @@ export function aggregateMonthlyAnalytics({ bookings = [], year, month } = {}) {
   let collected = 0;
   let refunded = 0;
   const bookingRows = bookings.filter((row) => row && typeof row === 'object');
+  // Older bookings can reveal a shared contact number without adding customers to this month.
+  const accounts = accountsByBookingPhone(bookingRows);
 
   for (const booking of bookingRows) {
     if (!days.has(booking.date)) continue;
@@ -129,7 +163,7 @@ export function aggregateMonthlyAnalytics({ bookings = [], year, month } = {}) {
 
     completedBookings++;
     completedValue = addVnd(completedValue, amountInVnd(booking.finalPrice));
-    customers.add(customerKey(booking));
+    customers.add(customerKey(booking, accounts));
     const key = serviceKey(booking);
     const group = serviceGroups.get(key) || {
       id: String(booking.serviceId || booking.serviceName || 'unknown'),

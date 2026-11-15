@@ -123,3 +123,39 @@ test('the top five use completed appointments and historical service names; rank
   assert.equal(report.metrics.collected, 0);
   assert.doesNotMatch(JSON.stringify(report), /0987654321|customerPhone/);
 });
+
+test('customers served counts a customer account and a matching Admin booking once', () => {
+  const period = { year: 2028, month: 2 };
+  const appointment = { status: 'Completed', date: '2028-02-10', finalPrice: 120000 };
+  const customerBooking = {
+    ...appointment, id: 'customer-booking', userId: 'customer-a',
+    customerPhone: '0987654321', customerName: 'Nguyễn An',
+  };
+  const adminBooking = {
+    ...appointment, id: 'admin-booking', userId: null,
+    customerPhone: '+84 987 654 321', customerName: ' NGUYỄN  AN ',
+  };
+
+  for (const bookings of [[customerBooking, adminBooking], [adminBooking, customerBooking]]) {
+    const { metrics } = aggregateMonthlyAnalytics({ bookings, ...period });
+    assert.equal(metrics.customersServed, 1);
+    assert.equal(metrics.completedBookings, 2);
+  }
+});
+
+test('customers served keeps different people with a shared contact number separate', () => {
+  const period = { year: 2028, month: 2 };
+  const appointment = { status: 'Completed', date: '2028-02-10', customerPhone: '0987654321' };
+  const firstAccount = { ...appointment, id: 'first-account', userId: 'customer-a', customerName: 'Nguyễn An' };
+  const secondAccount = { ...appointment, id: 'second-account', userId: 'customer-b', customerName: 'Trần Bình' };
+  const matchingGuest = { ...appointment, id: 'first-guest', userId: null, customerName: 'Nguyễn An' };
+  const otherGuest = { ...appointment, id: 'second-guest', userId: null, customerName: 'Trần Bình' };
+  const count = (bookings) => aggregateMonthlyAnalytics({ bookings, ...period }).metrics.customersServed;
+
+  assert.equal(count([firstAccount, secondAccount]), 2, 'a shared number never merges account IDs');
+  assert.equal(count([firstAccount, otherGuest]), 2, 'different names block a phone match');
+  assert.equal(count([matchingGuest, otherGuest]), 2, 'separate named guests may share a phone');
+  assert.equal(count([firstAccount, secondAccount, matchingGuest]), 3, 'ambiguous guest remains separate');
+  assert.equal(count([firstAccount, matchingGuest, { ...secondAccount, date: '2028-01-31' }]), 2,
+    'history reveals ambiguity without counting prior-month appointments');
+});
