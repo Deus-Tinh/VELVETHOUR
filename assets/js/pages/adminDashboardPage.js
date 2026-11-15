@@ -542,7 +542,7 @@ function paymentMethodLabel(method) {
   return ({ cash: 'Tiền mặt', bank: 'Chuyển khoản', momo: 'MoMo', card: 'Thẻ', other: 'Khác' })[method] || 'Khác';
 }
 
-async function renderTabReconciliation(container) {
+export async function renderTabReconciliation(container) {
   container.innerHTML = '<div style="padding:24px;background:#fff;border-radius:10px;color:#64748b;">Đang tải giao dịch và đề nghị hoàn…</div>';
   let data;
   try { data = await apiClient.getPaymentReconciliation(); }
@@ -554,17 +554,18 @@ async function renderTabReconciliation(container) {
   const events = data.events || [];
   const refunds = data.refunds || [];
   const reconcileBookings = data.bookings || [];
+  const recipient = data.payment?.enabled && data.payment.bankName && data.payment.accountNumber
+    ? esc(data.payment.bankName + ' ' + data.payment.accountNumber) : '';
   const pendingVietQr = reconcileBookings.filter((b) => b.status === 'Pending' || b.paymentStatus === 'payment_submitted');
   container.innerHTML = `
     <section style="padding:18px 20px;background:#fff;border:1px solid #e2e8f0;border-radius:10px;margin-bottom:18px;">
       <h3 style="margin:0 0 6px;">Trạng thái nhận tiền</h3>
-      <p style="margin:0;color:${data.payment?.enabled ? '#087f6e' : '#b42318'};">${data.payment?.enabled ? (data.payment?.mode === 'direct_manual' ? 'Chuyển khoản VietQR Trực Tiếp (Techcombank) đang BẬT · Duyệt thủ công miễn phí.' : 'SePay đã cấu hình sẵn sàng nhận giao dịch tự động.') : esc(data.payment?.unavailableMessage || 'Cấu hình thanh toán chưa hoàn tất.')}</p>
-      <small style="display:block;margin-top:7px;color:#64748b;">Khách quét mã VietQR chuyển khoản vào Techcombank ${esc(data.payment?.accountNumber || '')} · Lễ tân kiểm tra app ngân hàng và bấm duyệt.</small>
+      <p style="margin:0;color:${data.payment?.enabled ? '#087f6e' : '#b42318'};">${data.payment?.enabled ? (data.payment?.mode === 'direct_manual' ? 'Chuyển khoản VietQR trực tiếp đang bật · Duyệt thủ công.' : 'SePay đã cấu hình sẵn sàng nhận giao dịch tự động.') : esc(data.payment?.unavailableMessage || 'Cấu hình thanh toán chưa hoàn tất.')}</p>
+      ${recipient ? `<small style="display:block;margin-top:7px;color:#64748b;">Tài khoản nhận theo cấu hình: ${recipient}</small>` : ''}
     </section>
     <section style="padding:18px 20px;background:#fff;border:1px solid #bbf7d0;border-radius:10px;margin-bottom:18px;background:#f0fdf4;">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
         <h3 style="margin:0;color:#166534;">🏦 Đơn Chuyển Khoản VietQR Chờ Duyệt (${pendingVietQr.length})</h3>
-        <span style="font-size:12px;color:#15803d;">Quét QR Techcombank 19077430861011</span>
       </div>
       ${pendingVietQr.length ? `<div class="data-table-wrap"><table class="data-table"><thead><tr><th>Đơn / Khách</th><th>Liệu trình</th><th>Cần thu</th><th>Mã VietQR</th><th>Trạng thái</th><th>Thao tác</th></tr></thead><tbody>
         ${pendingVietQr.map((item) => `<tr>
