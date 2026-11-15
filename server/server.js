@@ -308,6 +308,15 @@ function visibleBooking(booking, actor) {
     lastReschedulePaymentStatus: _lastReschedulePaymentStatus, lastReschedulePaymentAt: _lastReschedulePaymentAt, ...safe } = booking;
   return safe;
 }
+async function visibleAssignedBookings(records, actor) {
+  const pendingIds = new Set((await parseRows('bookingDeclineRequests'))
+    .filter((row) => row.staffId === actor.staffId && row.status === 'pending')
+    .map((row) => row.bookingId));
+  return records.filter((row) => row.staffId === actor.staffId).map((row) => ({
+    ...visibleBooking(row, actor),
+    hasPendingDeclineRequest: pendingIds.has(row.id),
+  }));
+}
 function visibleCustomerBooking(booking) {
   if (!booking?.refundRequest) return booking;
   return { ...booking, refundRequest: visibleCustomerRefund(booking.refundRequest) };
@@ -1151,7 +1160,7 @@ async function collectionSnapshot(actor) {
   const records = all.bookings || [];
   all.bookings = actor?.role === 'admin' ? records
     : actor?.role === 'staff' && hasPermission(actor, 'booking.read_assigned', actor.staffRole)
-      ? records.filter((row) => row.staffId === actor.staffId).map((row) => visibleBooking(row, actor))
+      ? await visibleAssignedBookings(records, actor)
       : actor?.role === 'customer' ? records.filter((row) => row.userId === actor.id).map(visibleCustomerBooking) : [];
   all.users = actor?.role === 'admin' ? (all.users || []).map(safeUser) : actor ? [safeUser(await getRecord('users', actor.id))].filter(Boolean) : [];
   all.contacts = actor?.role === 'admin' ? all.contacts : [];
@@ -3070,7 +3079,7 @@ async function routeApi(request, response, url) {
     if (actor?.role === 'customer') return respond(response, 200, { bookings: (await parseRows('bookings')).filter((booking) => booking.userId === actor.id).map(visibleCustomerBooking) });
     if (actor?.role === 'staff') {
       if (!hasPermission(actor, 'booking.read_assigned', actor.staffRole)) throw new HttpError(403, 'Vai trò của bạn không được xem lịch hẹn.', 'FORBIDDEN');
-      return respond(response, 200, { bookings: (await parseRows('bookings')).filter((booking) => booking.staffId === actor.staffId).map((booking) => visibleBooking(booking, actor)) });
+      return respond(response, 200, { bookings: await visibleAssignedBookings(await parseRows('bookings'), actor) });
     }
     const phone = normalizeVietnamPhone(url.searchParams.get('phone'));
     if (!isVietnamPhone(phone)) return respond(response, 200, { bookings: [] });

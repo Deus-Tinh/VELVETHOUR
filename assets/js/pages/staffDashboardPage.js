@@ -15,6 +15,7 @@ import { todayStr, formatVND, esc, formatDate, businessNow, timeToMin } from '..
 import { showToast, showConfirmModal, openChangePasswordModal } from '../ui/components.js';
 
 let filterDate = todayStr();
+const confirmingBookings = new Set();
 
 export function renderStaffDashboardPage() {
   const root = document.getElementById('appRoot');
@@ -148,12 +149,13 @@ export function renderStaffDashboardPage() {
                     <span class="badge-status ${staffStatusClass(b.status)}">
                       ${{ Pending: 'Chờ xác nhận', Confirmed: 'Đã xác nhận', CheckedIn: 'Đã đến', Completed: 'Hoàn tất', Cancelled: 'Đã hủy', NoShow: 'Vắng mặt' }[b.status] || b.status}
                     </span>
+                    ${b.hasPendingDeclineRequest ? '<span class="badge-status badge-pending">Đang chờ Admin xử lý</span>' : ''}
                   </td>
                   <td>
                     ${b.status === 'Pending' && currentUserCan(currentUser, 'booking.confirm_assigned') ? `
-                      <div style="display:flex;gap:6px;flex-wrap:wrap;">
-                        <button type="button" class="btn-sm btn-success confirm-booking-btn" data-id="${esc(b.id)}">XÁC NHẬN</button>
-                        <button type="button" class="btn-sm btn-outline decline-booking-btn" data-id="${esc(b.id)}" style="color:#9a3412;">TỪ CHỐI</button>
+                      <div class="staff-booking-actions" style="display:flex;gap:6px;flex-wrap:wrap;">
+                        <button type="button" class="btn-sm btn-success confirm-booking-btn" data-id="${esc(b.id)}" ${confirmingBookings.has(b.id) ? 'disabled' : ''}>${confirmingBookings.has(b.id) ? 'ĐANG XÁC NHẬN…' : 'XÁC NHẬN'}</button>
+                        ${b.hasPendingDeclineRequest ? '' : `<button type="button" class="btn-sm btn-outline decline-booking-btn" data-id="${esc(b.id)}" style="color:#9a3412;" ${confirmingBookings.has(b.id) ? 'disabled' : ''}>TỪ CHỐI</button>`}
                       </div>
                     ` : b.status === 'Confirmed' && currentUserCan(currentUser, 'booking.checkin_assigned') ? `
                       <button type="button" class="btn-sm btn-success mark-arrived-btn" data-id="${esc(b.id)}">
@@ -202,27 +204,41 @@ export function renderStaffDashboardPage() {
   });
 
   // Sự kiện đánh dấu Hoàn thành ca
-  containerListeners(root);
+  containerListeners(root, currentFilteredList);
   wireDayOffRequestForm(root, currentUser);
   loadDayOffRequests(root);
 }
 
-function containerListeners(root) {
+function containerListeners(root, bookings) {
   root.querySelectorAll('.confirm-booking-btn').forEach((btn) => {
     btn.addEventListener('click', async () => {
+      const id = btn.dataset.id;
+      if (confirmingBookings.has(id)) return;
+      if (!apiClient.isOnline()) {
+        showToast('Không thể kết nối máy chủ. Vui lòng kết nối lại trước khi xác nhận lịch hẹn.', 'danger');
+        return;
+      }
+      confirmingBookings.add(id);
       btn.disabled = true;
+      btn.textContent = 'ĐANG XÁC NHẬN…';
+      const decline = btn.parentElement.querySelector('.decline-booking-btn');
+      if (decline) decline.disabled = true;
       try {
-        await bookingService.updateStatus(btn.getAttribute('data-id'), 'Confirmed');
-        showToast('Đã xác nhận lịch hẹn.', 'success');
-        renderStaffDashboardPage();
+        await bookingService.updateStatus(id, 'Confirmed');
+        showToast('Đã nhận và xác nhận lịch hẹn thành công.', 'success');
       } catch (err) {
-        btn.disabled = false;
-        showToast(err.message || 'Không thể xác nhận lịch hẹn.', 'danger');
+        showToast(staffActionError(err, 'Không thể xác nhận lịch hẹn.'), 'danger');
+      } finally {
+        confirmingBookings.delete(id);
+        if (root.querySelector('#staffAllBtn')) renderStaffDashboardPage();
       }
     });
   });
   root.querySelectorAll('.decline-booking-btn').forEach((btn) => {
-    btn.addEventListener('click', () => openDeclineRequestDialog(btn.getAttribute('data-id')));
+    btn.addEventListener('click', () => {
+      const booking = bookings.find(({ id }) => id === btn.dataset.id);
+      if (booking && !confirmingBookings.has(booking.id)) openDeclineRequestDialog(booking);
+    });
   });
   root.querySelectorAll('.mark-complete-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -318,12 +334,22 @@ async function loadDayOffRequests(root) {
   }
 }
 
-function openDeclineRequestDialog(bookingId) {
+function staffActionError(error, fallback) {
+  if (error instanceof TypeError || error.name === 'TimeoutError') {
+    return 'Không thể kết nối máy chủ. Vui lòng kiểm tra kết nối và tải lại lịch trước khi thử lại.';
+  }
+  return error.message || fallback;
+}
+
+function openDeclineRequestDialog(booking) {
   const dialog = document.createElement('dialog');
   dialog.className = 'staff-action-dialog';
+  dialog.setAttribute('aria-labelledby', 'staffDeclineTitle');
   dialog.innerHTML = `
     <form method="dialog" class="staff-action-dialog-card">
-      <h3>Gửi yêu cầu từ chối lịch</h3>
+      <h3 id="staffDeclineTitle">Gửi yêu cầu từ chối lịch</h3>
+      <p><strong>${esc(booking.code || booking.id)} · ${esc(booking.customerName)}</strong><br>
+        ${esc(formatDate(booking.date))} · ${esc(booking.startTime)}–${esc(booking.endTime)} · ${esc(booking.serviceName)}</p>
       <p>Quản trị viên sẽ xem yêu cầu và xử lý booking. Lịch của khách không bị xóa hoặc tự hủy.</p>
       <label for="declineReason">Lý do <span aria-hidden="true">*</span></label>
       <select id="declineReason" name="reason" required>
@@ -334,8 +360,9 @@ function openDeclineRequestDialog(bookingId) {
         <option value="customer_requested_change">Khách yêu cầu chuyên viên khác</option>
         <option value="other">Lý do khác</option>
       </select>
-      <label for="declineNote">Ghi chú ${'<span id="declineNoteRequired" hidden>(bắt buộc với lý do khác)</span>'}</label>
+      <label for="declineNote">Ghi chú <span id="declineNoteRequired" hidden>(bắt buộc với lý do khác)</span></label>
       <textarea id="declineNote" name="note" rows="3" maxlength="500" placeholder="Thêm thông tin để Admin xử lý"></textarea>
+      <p class="staff-action-error" role="alert"></p>
       <div class="staff-action-dialog-actions">
         <button type="button" class="btn-outline" data-dialog-close>Quay lại</button>
         <button type="submit" class="btn-primary" id="submitDeclineRequest">Gửi yêu cầu</button>
@@ -346,25 +373,40 @@ function openDeclineRequestDialog(bookingId) {
   const reason = dialog.querySelector('#declineReason');
   const note = dialog.querySelector('#declineNote');
   const required = dialog.querySelector('#declineNoteRequired');
+  const feedback = dialog.querySelector('.staff-action-error');
+  const back = dialog.querySelector('[data-dialog-close]');
+  const submit = dialog.querySelector('#submitDeclineRequest');
   reason.addEventListener('change', () => {
     const isOther = reason.value === 'other';
     note.required = isOther;
     required.hidden = !isOther;
   });
-  dialog.querySelector('[data-dialog-close]').addEventListener('click', () => dialog.close());
+  back.addEventListener('click', () => dialog.close());
+  dialog.addEventListener('cancel', (event) => {
+    if (submit.disabled) event.preventDefault();
+  });
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
-    const submit = dialog.querySelector('#submitDeclineRequest');
-    if (!form.reportValidity()) return;
+    if (submit.disabled || !form.reportValidity()) return;
+    if (reason.value === 'other' && !note.value.trim()) {
+      feedback.textContent = 'Vui lòng nhập ghi chú cho lý do khác.';
+      note.focus();
+      return;
+    }
+    feedback.textContent = '';
     submit.disabled = true;
+    back.disabled = true;
+    submit.textContent = 'Đang gửi…';
     try {
-      await apiClient.requestBookingDecline(bookingId, { reason: reason.value, note: note.value });
+      await bookingService.requestDecline(booking.id, { reason: reason.value, note: note.value.trim() });
       dialog.close();
-      showToast('Đã gửi yêu cầu. Quản trị viên cần xử lý lịch này.', 'success');
-      renderStaffDashboardPage();
+      showToast('Đã gửi yêu cầu từ chối. Vui lòng chờ quản trị viên xử lý.', 'success');
+      if (document.getElementById('staffAllBtn')) renderStaffDashboardPage();
     } catch (error) {
+      feedback.textContent = staffActionError(error, 'Không thể gửi yêu cầu từ chối.');
       submit.disabled = false;
-      showToast(error.message || 'Không thể gửi yêu cầu từ chối.', 'danger');
+      back.disabled = false;
+      submit.textContent = 'Gửi yêu cầu';
     }
   });
   dialog.addEventListener('close', () => dialog.remove(), { once: true });

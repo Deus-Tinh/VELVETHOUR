@@ -447,6 +447,9 @@ export const bookingService = {
   updateStatus(id, newStatus, reason = '') {
     if (apiClient.isOnline()) {
       return apiClient.updateBookingStatus(id, newStatus, reason).then(({ booking }) => {
+        if (booking?.id !== id || booking.status !== newStatus) {
+          throw new Error('Máy chủ chưa xác nhận trạng thái lịch hẹn. Vui lòng tải lại lịch.');
+        }
         if (bookingRepo.getById(id)) bookingRepo.update(id, booking);
         else bookingRepo.create(booking);
         return booking;
@@ -459,6 +462,14 @@ export const bookingService = {
     const isAssignedStaffAction = actor?.role === 'staff' && actor.staffId === booking.staffId && ['CheckedIn', 'Completed', 'NoShow'].includes(newStatus);
     if (!isAdmin && !isAssignedStaffAction) throw new AppError('UNAUTHORIZED', 'Bạn không có quyền cập nhật trạng thái lịch hẹn này.');
     return transitionBooking(id, newStatus, reason);
+  },
+
+  async requestDecline(id, details) {
+    const { request } = await apiClient.requestBookingDecline(id, details);
+    if (request?.bookingId !== id || request.status !== 'pending') {
+      throw new Error('Máy chủ chưa xác nhận yêu cầu từ chối. Vui lòng tải lại lịch.');
+    }
+    if (bookingRepo.getById(id)) bookingRepo.update(id, { hasPendingDeclineRequest: true });
   },
 
   /** Ghi nhận tiền cọc, thanh toán hoặc hoàn tiền vào sổ giao dịch của lịch hẹn. */
