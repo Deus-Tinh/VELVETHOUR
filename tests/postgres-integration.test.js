@@ -413,6 +413,14 @@ test('PostgreSQL staff permissions, decline requests and approved days off survi
   assert.deepEqual(declines.map(({ status }) => status).sort(), [201, 409]);
   const decline = declines.find(({ status }) => status === 201).payload.request;
   assert.equal(decline.smsStatus, 'not_configured');
+  const ownBookings = await request('GET', '/api/bookings', undefined, staffCookie);
+  assert.equal(ownBookings.payload.bookings.find(({ id }) => id === booking.id)?.hasPendingDeclineRequest, true);
+  const staffSnapshot = await request('GET', '/api/bootstrap', undefined, staffCookie);
+  assert.equal(staffSnapshot.payload.collections.bookings.find(({ id }) => id === booking.id)?.hasPendingDeclineRequest, true);
+  const customerSnapshot = await request('GET', '/api/bootstrap', undefined, customerCookie);
+  const customerBooking = customerSnapshot.payload.collections.bookings.find(({ id }) => id === booking.id);
+  assert.ok(customerBooking);
+  assert.ok(!Object.hasOwn(customerBooking, 'hasPendingDeclineRequest'));
   const pendingDeclines = await request('GET', '/api/admin/booking-decline-requests', undefined, adminCookie);
   assert.ok(pendingDeclines.payload.requests.some(({ id }) => id === decline.id));
 

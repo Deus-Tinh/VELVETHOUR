@@ -15,9 +15,9 @@ export function showToast(message, type = 'normal') {
 
   const toast = document.createElement('div');
   toast.className = `toast ${type}`;
-  toast.setAttribute('role', 'alert');
+  toast.setAttribute('role', type === 'danger' ? 'alert' : 'status');
   toast.innerHTML = `
-    <span class="toast-icon">${type === 'success' ? '✓' : type === 'danger' ? '⚠' : 'ℹ'}</span>
+    <span class="toast-icon" aria-hidden="true">${type === 'success' ? '✓' : type === 'danger' ? '⚠' : 'ℹ'}</span>
     <span class="toast-msg">${esc(message)}</span>
   `;
 

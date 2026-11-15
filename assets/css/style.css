@@ -3432,10 +3432,39 @@ footer.site-footer {
 .admin-affected-bookings li { margin: 4px 0; font-size: 12px; overflow-wrap: anywhere; }
 .admin-no-affected { color: #166534 !important; }
 
+.toast-container {
+  position: fixed;
+  z-index: 2100;
+  inset-block-start: max(16px, env(safe-area-inset-top));
+  inset-inline-end: max(16px, env(safe-area-inset-right));
+  width: min(380px, calc(100% - 32px));
+  display: grid;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 16px;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgb(0 0 0 / 22%);
+  line-height: 1.45;
+}
+
+.toast.normal { background: #334155; color: #fff; }
+.toast.success { background: #166534; color: #fff; }
+.toast.danger { background: #991b1b; color: #fff; }
+.toast-icon { flex: none; }
+.toast-msg { min-width: 0; white-space: pre-line; overflow-wrap: anywhere; }
+
 .staff-action-dialog {
   border: 0;
   border-radius: 12px;
   width: min(520px, calc(100vw - 28px));
+  max-height: calc(100dvh - 28px);
+  margin: auto;
   padding: 0;
   box-shadow: 0 20px 70px rgba(0, 0, 0, 0.28);
 }
@@ -3447,7 +3476,11 @@ footer.site-footer {
 .staff-action-dialog-card label { font-size: 13px; font-weight: 600; color: #475569; }
 .staff-action-dialog-card select,
 .staff-action-dialog-card textarea { width: 100%; padding: 10px; border: 1px solid #d9d1c8; border-radius: 7px; font: inherit; }
-.staff-action-dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 10px; }
+.staff-action-dialog-card .staff-action-error { color: #991b1b; }
+.staff-action-error:empty { display: none; }
+.staff-action-dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; margin-top: 10px; }
+.staff-booking-actions button:disabled,
+.staff-action-dialog-actions button:disabled { cursor: wait; opacity: .65; }
 
 .schedule-slot-off {
   display: inline-flex;
