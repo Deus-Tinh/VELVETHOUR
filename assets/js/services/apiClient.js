@@ -390,6 +390,31 @@ export const apiClient = {
   async acceptStaffInvite(invitation) { const result = await request('/auth/staff-invite/accept', { method: 'POST', body: JSON.stringify(invitation) }); currentRole = result.user?.role || null; return result; },
   async listStaffInvites() { return request('/admin/staff-invites'); },
   async createStaffInvite(invitation) { return request('/admin/staff-invites', { method: 'POST', body: JSON.stringify(invitation) }); },
+  async updateStaffRole(staffId, staffRole) {
+    return request(`/admin/staff/${encodeURIComponent(staffId)}/role`, { method: 'PATCH', body: JSON.stringify({ staffRole }) });
+  },
+  async listMyDayOffRequests() { return request('/staff/day-off-requests'); },
+  async createDayOffRequest(payload) { return request('/staff/day-off-requests', { method: 'POST', body: JSON.stringify(payload) }); },
+  async listStaffDayOffRequests() { return request('/admin/staff-day-off-requests'); },
+  async decideStaffDayOffRequest(id, decision, note = '') {
+    return request(`/admin/staff-day-off-requests/${encodeURIComponent(id)}/decision`, {
+      method: 'POST', body: JSON.stringify({ decision, note }),
+    });
+  },
+  async reassignBooking(id, staffId, note = '') {
+    const result = await request(`/admin/bookings/${encodeURIComponent(id)}/reassign`, {
+      method: 'POST', body: JSON.stringify({ staffId, note }),
+    });
+    rememberBooking(result.booking);
+    return result;
+  },
+  async requestBookingDecline(id, payload) {
+    return request(`/bookings/${encodeURIComponent(id)}/decline-request`, { method: 'POST', body: JSON.stringify(payload) });
+  },
+  async listBookingDeclineRequests() { return request('/admin/booking-decline-requests'); },
+  async resolveBookingDeclineRequest(id, payload) {
+    return request(`/admin/booking-decline-requests/${encodeURIComponent(id)}/resolve`, { method: 'POST', body: JSON.stringify(payload) });
+  },
   async logout() { try { return await request('/auth/logout', { method: 'POST', body: '{}' }); } finally { currentRole = null; } },
   async updateProfile(profile) { return request('/auth/profile', { method: 'PATCH', body: JSON.stringify(profile) }); },
   async changePassword(credentials) { return request('/auth/change-password', { method: 'POST', body: JSON.stringify(credentials) }); },

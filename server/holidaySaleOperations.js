@@ -264,6 +264,7 @@ export function createHolidaySaleOperations({ db, getRecord, parseRows, saveReco
       await reschedulable(booking);
       if (digest(JSON.parse(row.pricing_versions)) !== digest(await versions(booking))) fail(409, 'Dữ liệu đã đổi. Vui lòng xem và xác nhận báo giá mới.', 'QUOTE_STALE');
       const change = JSON.parse(row.requested_change);
+      await db.acquireTransactionLock({ namespace: 'booking-date', key: change.date });
       const slot = await assertSlot({ serviceId: booking.serviceId, duration: booking.duration, staffId: change.staffId,
         date: change.date, startTime: change.startTime, excludeId: id });
       change.endTime = slot.endTime;
@@ -312,6 +313,7 @@ export function createHolidaySaleOperations({ db, getRecord, parseRows, saveReco
       || booking.reschedulePaymentRequest?.quoteId !== request.quoteId) {
       fail(409, 'Lịch cũ không còn hợp lệ để hoàn tất dời lịch.', 'RESCHEDULE_PAYMENT_STALE');
     }
+    await db.acquireTransactionLock({ namespace: 'booking-date', key: request.change.date });
     const slot = await assertSlot({ serviceId: booking.serviceId, duration: booking.duration, staffId: request.change.staffId,
       date: request.change.date, startTime: request.change.startTime, excludeId: booking.id });
     const change = { ...request.change, endTime: slot.endTime, roomNumber: slot.roomNumber, staffId: slot.staff.id, staffName: slot.staff.name };

@@ -372,3 +372,88 @@ test('bookings, sessions, and migration state survive a PostgreSQL server restar
   assert.equal(restored.duration, 90);
   assert.equal(restored.endTime, '18:30');
 });
+
+
+test('PostgreSQL staff permissions, decline requests and approved days off survive a backend restart', async () => {
+  const staffCookie = await login('linh@example.invalid', TEST_PASSWORDS.staff);
+  const rolePath = '/api/admin/staff/st-01/role';
+  const session = () => request('GET', '/api/auth/session', undefined, staffCookie);
+  assert.equal((await session()).payload.user.staffRole, 'specialist');
+  assert.equal((await request('PATCH', rolePath, { staffRole: 'senior_specialist' }, staffCookie)).status, 403);
+  assert.equal((await request('GET', '/api/admin/payments/reconciliation', undefined, staffCookie)).status, 403);
+
+  const date = futureDate(29);
+  const appointment = await createBooking(date, { staffId: 'st-01', duration: 90, startTime: '17:00' });
+  assert.equal(appointment.status, 201, JSON.stringify(appointment.payload));
+  const booking = appointment.payload.booking;
+  const lists = await request('GET', '/api/bookings', undefined, staffCookie);
+  assert.ok(lists.payload.bookings.every((row) => row.staffId === 'st-01'));
+  const assigned = lists.payload.bookings.find((row) => row.id === booking.id);
+  assert.ok(assigned);
+  for (const field of ['paymentCode', 'paymentRecords', 'pricingSnapshot', 'finalPrice']) {
+    assert.ok(!Object.hasOwn(assigned, field), field);
+  }
+  const status = (id, value) => request('PATCH', `/api/bookings/${id}/status`, { status: value }, staffCookie);
+  assert.equal((await status(persistentBookingId, 'Confirmed')).status, 403);
+  assert.equal((await status(booking.id, 'CheckedIn')).status, 403);
+  assert.equal((await request('PATCH', rolePath, { staffRole: 'senior_specialist' }, adminCookie)).status, 200);
+  assert.ok((await session()).payload.user.permissions.includes('booking.checkin_assigned'));
+  assert.equal((await request('PATCH', rolePath, { staffRole: 'specialist' }, adminCookie)).status, 200);
+
+  const readStaff = async () => JSON.parse((await appPool.query(
+    "SELECT payload FROM collection_records WHERE collection='staff' AND id='st-01'",
+  )).rows[0].payload);
+  const previousStaff = await readStaff();
+
+  const declinePath = `/api/bookings/${booking.id}/decline-request`;
+  const declines = await Promise.all([
+    request('POST', declinePath, { reason: 'health' }, staffCookie),
+    request('POST', declinePath, { reason: 'health' }, staffCookie),
+  ]);
+  assert.deepEqual(declines.map(({ status }) => status).sort(), [201, 409]);
+  const decline = declines.find(({ status }) => status === 201).payload.request;
+  assert.equal(decline.smsStatus, 'not_configured');
+  const pendingDeclines = await request('GET', '/api/admin/booking-decline-requests', undefined, adminCookie);
+  assert.ok(pendingDeclines.payload.requests.some(({ id }) => id === decline.id));
+
+  const dayOffPath = '/api/staff/day-off-requests';
+  const submissions = await Promise.all([
+    request('POST', dayOffPath, { date, reason: 'Sức khỏe' }, staffCookie),
+    request('POST', dayOffPath, { date, reason: 'Sức khỏe' }, staffCookie),
+  ]);
+  assert.deepEqual(submissions.map(({ status }) => status).sort(), [201, 409]);
+  const leave = submissions.find(({ status }) => status === 201).payload.request;
+  const decide = () => request('POST', `/api/admin/staff-day-off-requests/${leave.id}/decision`,
+    { decision: 'approved' }, adminCookie);
+  const rejectedApproval = await decide();
+  assert.equal(rejectedApproval.status, 409);
+  assert.equal(rejectedApproval.payload.code, 'BOOKINGS_AFFECTED');
+  assert.ok(!(await readStaff()).daysOff.includes(date));
+
+  const moved = await request('POST', `/api/admin/booking-decline-requests/${decline.id}/resolve`,
+    { action: 'reassign', staffId: 'st-04' }, adminCookie);
+  assert.equal(moved.status, 200, JSON.stringify(moved.payload));
+  assert.equal(moved.payload.booking.revision, booking.revision + 1);
+  assert.equal(moved.payload.booking.duration, 90);
+  assert.equal(moved.payload.booking.endTime, '18:30');
+  assert.equal((await decide()).status, 200);
+  assert.deepEqual((await readStaff()).workingDays, previousStaff.workingDays);
+  const blocked = await createBooking(date, { staffId: 'st-01', startTime: '10:00' });
+  assert.equal(blocked.status, 400);
+  assert.equal(blocked.payload.code, 'STAFF_UNAVAILABLE');
+  assert.equal((await status(booking.id, 'Confirmed')).status, 403);
+
+  await stopServer();
+  await startServer();
+  const ownRequests = await request('GET', dayOffPath, undefined, staffCookie);
+  assert.equal(ownRequests.payload.requests.find(({ id }) => id === leave.id).status, 'approved');
+  const persistedDecline = await appPool.query(
+    "SELECT payload FROM collection_records WHERE collection='bookingDeclineRequests' AND id=$1", [decline.id],
+  );
+  assert.equal(JSON.parse(persistedDecline.rows[0].payload).resolution, 'reassign');
+  const adminBookings = await request('GET', '/api/bookings', undefined, adminCookie);
+  const persistedBooking = adminBookings.payload.bookings.find(({ id }) => id === booking.id);
+  assert.equal(persistedBooking.staffId, 'st-04');
+  assert.equal(persistedBooking.duration, 90);
+  assert.ok((await readStaff()).daysOff.includes(date));
+});

@@ -10,7 +10,7 @@ import { hashPassword } from '../core/hash.js';
 import { AppError } from '../core/errors.js';
 import { validate, schemas, required, minLength, maxLength, email as emailRule, phoneVN, strongPassword } from '../core/validators.js';
 import { emit } from '../core/events.js';
-import { setState } from '../core/store.js';
+import { getState, setState } from '../core/store.js';
 import { apiClient } from './apiClient.js';
 
 const SESSION_KEY = 'session';
@@ -20,7 +20,12 @@ export const authService = {
   getCurrentUser() {
     const session = readJSON(SESSION_KEY, null);
     if (!session || !session.userId) return null;
-    const user = userRepo.getById(session.userId);
+    const storedUser = userRepo.getById(session.userId);
+    const sessionUser = getState().currentUser;
+    const user = storedUser && sessionUser?.id === storedUser.id
+      ? { ...storedUser, ...(sessionUser.staffRole ? { staffRole: sessionUser.staffRole } : {}),
+        ...(Array.isArray(sessionUser.permissions) ? { permissions: sessionUser.permissions } : {}) }
+      : storedUser;
     if (!user || user.active === false) {
       this.logout();
       return null;

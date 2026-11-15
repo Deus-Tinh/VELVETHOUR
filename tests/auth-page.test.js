@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import { authService } from '../assets/js/services/authService.js';
 import { apiClient } from '../assets/js/services/apiClient.js';
 import { storage } from '../assets/js/core/storage.js';
+import { writeJSON } from '../assets/js/core/storage.js';
+import { getState, setState } from '../assets/js/core/store.js';
+import { userRepo } from '../assets/js/data/repositories.js';
 
 const initialWindow = globalThis.window;
 globalThis.window = {};
@@ -22,6 +25,28 @@ function createWindow(href) {
   };
   return { location, history, sessionStorage: { setItem() {}, removeItem() {} }, dispatchEvent() {} };
 }
+
+test('staff role permissions survive user repository hydration in the authenticated UI session', () => {
+  const originalBackend = storage.raw();
+  const originalState = getState();
+  const originalOnline = apiClient.isOnline;
+  storage.useMemory();
+  apiClient.isOnline = () => false;
+  try {
+    const staffId = 'hydrated-senior-permissions';
+    userRepo.create({ id: staffId, name: 'Senior Staff', email: 'senior@example.invalid', role: 'staff', staffId: 'st-01', active: true });
+    writeJSON('session', { userId: staffId });
+    setState({ currentUser: { id: staffId, role: 'staff', staffRole: 'senior_specialist', permissions: ['booking.complete_assigned'] } });
+    const current = authService.getCurrentUser();
+    assert.equal(current.staffRole, 'senior_specialist');
+    assert.deepEqual(current.permissions, ['booking.complete_assigned']);
+  } finally {
+    storage.setBackend(originalBackend);
+    apiClient.isOnline = originalOnline;
+    setState({ currentUser: originalState.currentUser });
+    apiClient.setLocalRole(originalState.currentUser?.role || null);
+  }
+});
 
 // An isolated form fixture: no browser, network requests, or application database.
 function createDocument() {

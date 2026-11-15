@@ -27,6 +27,8 @@ import { migrateAdminAgentHistory, createAdminAgentHistory, AGENT_HISTORY_RETENT
 import { createPaymentCode, createPaymentOperations, migratePaymentDatabase, paymentInstructions, publicPaymentConfig } from './paymentOperations.js';
 import { AppError } from '../assets/js/core/errors.js';
 import { calculatePrice as calculateDomainPrice } from '../assets/js/domain/pricingService.js';
+import { hasPermission, permissionsForActor, staffRoleDetails, STAFF_ROLES } from './staffAccess.js';
+import { createSmsNotifier } from './smsNotifier.js';
 import {
   CHAT_MAX_MESSAGE_LENGTH, classifyChatMessage, emptyChatContext, isAiConfigured, mergeChatContext,
   recommendServices, redactChatText, requestAiCriteria,
@@ -77,6 +79,8 @@ const CHAT_TTL_MS = 1000 * 60 * 60 * 24 * 30;
 const ACTIVE_BOOKING_STATUSES = new Set(['Pending', 'Confirmed', 'CheckedIn']);
 const STATUSES = new Set(['Pending', 'Confirmed', 'CheckedIn', 'Completed', 'Cancelled', 'NoShow']);
 const ADMIN_COLLECTIONS = new Set(['categories', 'services', 'staff', 'promotions', 'settings']);
+const notifyAdminSms = createSmsNotifier();
+const staffCollectionLock = { advisoryLock: { namespace: 'collection', key: 'staff' } };
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
   '.json': 'application/json; charset=utf-8', '.mp3': 'audio/mpeg', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg',
@@ -154,6 +158,7 @@ const q = {
   record: db.prepare('SELECT payload FROM collection_records WHERE collection = ? AND id = ?'),
   insert: db.prepare('INSERT INTO collection_records(collection, id, payload) VALUES (?, ?, ?)'),
   upsert: db.prepare('INSERT INTO collection_records(collection, id, payload) VALUES (?, ?, ?) ON CONFLICT(collection, id) DO UPDATE SET payload = excluded.payload'),
+  updateRecordIfUnchanged: db.prepare('UPDATE collection_records SET payload = ? WHERE collection = ? AND id = ? AND payload = ?'),
   deleteRecord: db.prepare('DELETE FROM collection_records WHERE collection = ? AND id = ?'),
   deleteCollection: db.prepare('DELETE FROM collection_records WHERE collection = ?'),
   version: db.prepare('SELECT version FROM collection_versions WHERE collection = ?'),
@@ -216,12 +221,12 @@ const rowCache = new Map(); // collection → { version, seq, rows }
 
 function parseRows(collection) {
   return (async () => {
-    if (!db.isPostgres) {
-      const currentDataVersion = (await q.dataVersion.get())?.data_version || 0;
-      if (currentDataVersion !== lastDataVersion) {
-        lastDataVersion = currentDataVersion;
-        rowCache.clear();
-      }
+    // Do not cache PostgreSQL rows across transaction snapshots or rollbacks.
+    if (db.isPostgres) return (await q.records.all(collection)).map((row) => JSON.parse(row.payload));
+    const currentDataVersion = (await q.dataVersion.get())?.data_version || 0;
+    if (currentDataVersion !== lastDataVersion) {
+      lastDataVersion = currentDataVersion;
+      rowCache.clear();
     }
     const v = await versionOf(collection);
     const cached = rowCache.get(collection);
@@ -243,9 +248,26 @@ async function getRecord(collection, id) {
   return row ? JSON.parse(row.payload) : null;
 }
 async function saveRecord(collection, record) {
-  if (collection === 'bookings') record.revision = Number((await getRecord(collection, record.id))?.revision || 0) + 1;
-  await q.upsert.run(collection, record.id, JSON.stringify(record));
+  if (collection === 'bookings') {
+    // Older handlers can hold a booking snapshot from before this transaction.
+    const current = await q.record.get(collection, record.id);
+    const revision = Number(current ? JSON.parse(current.payload).revision || 0 : 0);
+    if (revision !== Number(record.revision || 0)) throw bookingWriteConflict();
+    const updated = { ...record, revision: revision + 1 };
+    if (current) {
+      const result = await q.updateRecordIfUnchanged.run(JSON.stringify(updated), collection, record.id, current.payload);
+      if (Number(result.changes) !== 1) throw bookingWriteConflict();
+    } else {
+      await q.insert.run(collection, record.id, JSON.stringify(updated));
+    }
+    record.revision = updated.revision;
+  } else {
+    await q.upsert.run(collection, record.id, JSON.stringify(record));
+  }
   invalidateRowCache(collection);
+}
+function bookingWriteConflict() {
+  return new HttpError(409, 'Lịch vừa được thay đổi. Tải lại trước khi thử lại.', 'BOOKING_CONFLICT');
 }
 async function removeRecord(collection, id) {
   await q.deleteRecord.run(collection, id);
@@ -263,12 +285,25 @@ function safeUser(user) {
   const { passwordHash: _hash, passwordSalt: _salt, salt: _oldSalt, ...safe } = user;
   return { ...safe, email: normalizeEmailAddress(user.email) };
 }
+async function actorView(user) {
+  const safe = safeUser(user);
+  if (!safe || user.role !== 'staff') return safe;
+  const profile = user.staffId && await getRecord('staff', user.staffId);
+  if (!profile || profile.active === false) return null;
+  const staffRole = staffRoleDetails(profile.staffRole);
+  return { ...safe, staffRole: staffRole.id, permissions: permissionsForActor(user, staffRole.id) };
+}
 function normalizeEmailAddress(value) { return String(value ?? '').trim().toLowerCase(); }
 function visibleBooking(booking, actor) {
   if (!booking || actor?.role !== 'staff') return booking;
   const { paymentRecords: _paymentRecords, refundRequest: _refundRequest, paymentCode: _paymentCode,
     paymentExpiresAt: _paymentExpiresAt, paymentIssue: _paymentIssue,
+    customerTransferReport: _customerTransferReport, pricingSnapshot: _pricingSnapshot,
+    promoCode: _promoCode, couponRedemptions: _couponRedemptions, assignmentHistory: _assignmentHistory,
     invoiceSnapshot: _invoiceSnapshot,
+    paymentStatus: _paymentStatus, paymentMethod: _paymentMethod, paymentPaidAt: _paymentPaidAt,
+    originalPrice: _originalPrice, finalPrice: _finalPrice, discount: _discount, discountAmount: _discountAmount,
+    discountCode: _discountCode, couponCode: _couponCode,
     reschedulePaymentRequest: _reschedulePaymentRequest, lastReschedulePaymentRequest: _lastReschedulePaymentRequest,
     lastReschedulePaymentStatus: _lastReschedulePaymentStatus, lastReschedulePaymentAt: _lastReschedulePaymentAt, ...safe } = booking;
   return safe;
@@ -717,6 +752,65 @@ async function assertSlot({ serviceId, duration, staffId, date, startTime, exclu
   return { service, staff, duration: durationMinutes, startTime, endTime, roomNumber, originalPrice: Number(variant?.price ?? service.price) };
 }
 
+async function staffBookingsForDate(staffId, date) {
+  return (await activeBookings()).filter((booking) => booking.staffId === staffId && booking.date === date)
+    .sort((a, b) => a.startTime.localeCompare(b.startTime));
+}
+
+function bookingDateLock(date) {
+  return { advisoryLock: { namespace: 'booking-date', key: date } };
+}
+
+function affectedBookingView(booking) {
+  return {
+    id: booking.id, code: booking.code || booking.id, customerName: booking.customerName || 'Khách hàng',
+    customerPhone: booking.customerPhone || '', serviceName: booking.serviceName || booking.serviceId || 'Dịch vụ',
+    date: booking.date, startTime: booking.startTime, endTime: booking.endTime, status: booking.status,
+  };
+}
+
+async function validateStaffReassignment(booking, staffId) {
+  const staff = await getRecord('staff', staffId);
+  if (!staff || staff.active === false) throw new HttpError(400, 'Chuyên viên mới không khả dụng.', 'STAFF_INVALID');
+  const settings = await getRecord('settings', 'main') || {};
+  const service = await getRecord('services', booking.serviceId);
+  const date = String(booking.date || '');
+  const startTime = String(booking.startTime || '');
+  const endTime = String(booking.endTime || '');
+  if (!validDate(date) || !timePattern.test(startTime)) {
+    throw new HttpError(409, 'Thông tin lịch không đủ để chuyển chuyên viên an toàn.', 'BOOKING_INVALID');
+  }
+  const storedDuration = Number(booking.duration);
+  const duration = Number.isInteger(storedDuration) && storedDuration > 0
+    ? storedDuration : timePattern.test(endTime) ? minOf(endTime) - minOf(startTime) : NaN;
+  if (!Number.isInteger(duration) || duration <= 0) throw new HttpError(409, 'Thông tin thời lượng lịch không hợp lệ.', 'BOOKING_INVALID');
+  if ((settings.closedDates || []).includes(date) || !(staff.workingDays || []).includes(weekday(date))
+    || (staff.daysOff || []).includes(date)) {
+    throw new HttpError(409, 'Chuyên viên mới không làm việc vào ngày của lịch này.', 'STAFF_UNAVAILABLE');
+  }
+  const serviceCategory = service?.category || booking.serviceCategory;
+  if (!serviceCategory || !Array.isArray(staff.specialties) || !staff.specialties.includes(serviceCategory)) {
+    throw new HttpError(409, 'Chuyên viên mới không phụ trách dịch vụ của lịch này.', 'STAFF_UNQUALIFIED');
+  }
+  const endMinute = minOf(startTime) + duration;
+  const effectiveStart = Math.max(minOf(settings.openTime || '10:00'), minOf(staff.shiftStart || '10:00'));
+  const effectiveEnd = Math.min(minOf(settings.closeTime || '22:15'), minOf(staff.shiftEnd || '22:00'));
+  if (minOf(startTime) < effectiveStart || endMinute > effectiveEnd) {
+    throw new HttpError(409, 'Lịch nằm ngoài ca làm việc của chuyên viên mới.', 'OUTSIDE_WORKING_HOURS');
+  }
+  const breaks = [...(staff.breaks || [])];
+  if (staff.breakStart && staff.breakEnd) breaks.push({ startTime: staff.breakStart, endTime: staff.breakEnd });
+  if (breaks.some((item) => timePattern.test(item.startTime || '') && timePattern.test(item.endTime || '')
+    && overlap(minOf(startTime), endMinute, minOf(item.startTime), minOf(item.endTime)))) {
+    throw new HttpError(409, 'Lịch trùng giờ nghỉ của chuyên viên mới.', 'STAFF_BREAK');
+  }
+  const slotStep = Number(settings.slotStep || 30);
+  if (await findConflict({ staffId, date, startTime, durationMinutes: duration, slotStep, excludeId: booking.id })) {
+    throw new HttpError(409, 'Chuyên viên mới đã có lịch trùng giờ.', 'BOOKING_CONFLICT');
+  }
+  return staff;
+}
+
 async function validateServiceCollection(records) {
   if (new Set(records.map((record) => record.id)).size !== records.length) {
     throw new HttpError(400, 'Danh sách liệu trình có mã bị trùng.', 'DUPLICATE_SERVICE_ID');
@@ -843,7 +937,7 @@ async function createBookingForActor(body, actor) {
     if (promo) { const updatedPromo = { ...promo, usedCount: Number(promo.usedCount || 0) + 1 }; await saveRecord('promotions', updatedPromo); await nextVersion('promotions'); }
     await nextVersion('bookings');
     await withAudit(actor, 'booking.created', booking.id, { status: booking.status });
-  }, { advisoryLock: { namespace: 'booking-date', key: body.date } });
+  }, bookingDateLock(body.date));
   await backupIfDue();
   return { booking, status: 201 };
 }
@@ -900,7 +994,7 @@ async function actorFrom(request) {
     await q.deleteSession.run(tokenHash);
     return null;
   }
-  return user && user.active !== false ? safeUser(user) : null;
+  return actorView(user);
 }
 async function createSession(userId, response) {
   const token = randomBytes(32).toString('base64url');
@@ -912,6 +1006,13 @@ async function requireActor(request, roles = []) {
   const actor = await actorFrom(request);
   if (!actor) throw new HttpError(401, 'Vui lòng đăng nhập để tiếp tục.', 'UNAUTHORIZED');
   if (roles.length && !roles.includes(actor.role)) throw new HttpError(403, 'Tài khoản không có quyền thực hiện thao tác này.', 'FORBIDDEN');
+  return actor;
+}
+async function requireCapability(request, permission) {
+  const actor = await requireActor(request);
+  if (!hasPermission(actor, permission, actor.staffRole)) {
+    throw new HttpError(403, 'Tài khoản không có quyền thực hiện thao tác này.', 'FORBIDDEN');
+  }
   return actor;
 }
 function setSessionCookie(response, token) {
@@ -1049,7 +1150,8 @@ async function collectionSnapshot(actor) {
   const all = Object.fromEntries(await Promise.all(Object.keys(repos).map(async (name) => [name, await parseRows(name)])));
   const records = all.bookings || [];
   all.bookings = actor?.role === 'admin' ? records
-    : actor?.role === 'staff' ? records.filter((row) => row.staffId === actor.staffId).map((row) => visibleBooking(row, actor))
+    : actor?.role === 'staff' && hasPermission(actor, 'booking.read_assigned', actor.staffRole)
+      ? records.filter((row) => row.staffId === actor.staffId).map((row) => visibleBooking(row, actor))
       : actor?.role === 'customer' ? records.filter((row) => row.userId === actor.id).map(visibleCustomerBooking) : [];
   all.users = actor?.role === 'admin' ? (all.users || []).map(safeUser) : actor ? [safeUser(await getRecord('users', actor.id))].filter(Boolean) : [];
   all.contacts = actor?.role === 'admin' ? all.contacts : [];
@@ -1063,7 +1165,10 @@ async function collectionSnapshot(actor) {
     currentUser: actor,
     versions: Object.fromEntries(await Promise.all([...ADMIN_COLLECTIONS, 'holidaySales', 'siteContent'].map(async (name) => [name, await versionOf(name)]))),
     occupiedSlots: records.filter((row) => bookingOccupiesSlot(row) && row.date >= now.date)
-      .map(({ id, staffId, roomNumber, date, startTime, endTime, duration, status }) => ({ id, staffId, roomNumber, date, startTime, endTime, duration, status })),
+      .map(({ id, staffId, roomNumber, date, startTime, endTime, duration, status }) => ({
+        ...(actor?.role !== 'staff' || staffId === actor.staffId ? { id, status } : {}),
+        staffId, roomNumber, date, startTime, endTime, duration,
+      })),
   };
 }
 
@@ -2373,8 +2478,9 @@ async function routeApi(request, response, url) {
       const status = account && account.active !== false ? 'active'
         : invitationPending ? 'pending' : account ? 'inactive' : invite ? 'expired' : 'none';
       const email = invite && !invite.accepted_at ? invite.email : account?.email || invite?.email || '';
-      return { staffId: person.id, name: person.name, email, status,
-        expiresAt: invite?.expires_at || null };
+      const staffRole = staffRoleDetails(person.staffRole);
+      return { staffId: person.id, name: person.name, email, status, staffRole: staffRole.id,
+        roleLabel: staffRole.label, permissions: staffRole.permissions, expiresAt: invite?.expires_at || null };
     });
     return respond(response, 200, { invitations: staff });
   }
@@ -2403,9 +2509,11 @@ async function routeApi(request, response, url) {
       history.push(Date.now()); loginAttempts.set(attemptKey, history);
       throw new HttpError(401, 'Gmail hoặc mật khẩu không chính xác. Vui lòng nhập lại.', 'AUTH_FAILED');
     }
+    const authenticatedUser = await actorView(user);
+    if (!authenticatedUser) throw new HttpError(403, 'Hồ sơ chuyên viên không còn hoạt động.', 'STAFF_INVALID');
     loginAttempts.delete(attemptKey);
     await createSession(user.id, response);
-    return respond(response, 200, { user: safeUser(user) });
+    return respond(response, 200, { user: authenticatedUser });
   }
 
   if (method === 'POST' && pathname === '/api/auth/logout') {
@@ -2434,7 +2542,7 @@ async function routeApi(request, response, url) {
       passwordSalt: salt, passwordHash: scryptSync(password, salt, 64).toString('hex'), createdAt: new Date().toISOString() };
     await transaction(async () => { await saveRecord('users', user); await nextVersion('users'); });
     await createSession(user.id, response);
-    return respond(response, 201, { user: safeUser(user) });
+    return respond(response, 201, { user: await actorView(user) });
   }
 
   if (method === 'POST' && pathname === '/api/admin/staff-invites') {
@@ -2468,6 +2576,30 @@ async function routeApi(request, response, url) {
     const invitationUrl = new URL('/moi-nhan-vien', baseOrigin);
     invitationUrl.hash = `token=${encodeURIComponent(token)}`;
     return respond(response, 201, { invitation: { staffId: staff.id, name: staff.name, email, createdAt, expiresAt }, invitationUrl: invitationUrl.href });
+  }
+
+  const staffRoleRoute = pathname.match(/^\/api\/admin\/staff\/([^/]+)\/role$/);
+  if (method === 'PATCH' && staffRoleRoute) {
+    assertOrigin(request);
+    const actor = await requireCapability(request, 'staff.roles.manage');
+    const staffId = decodeURIComponent(staffRoleRoute[1]);
+    if (actor.staffId && actor.staffId === staffId) throw new HttpError(403, 'Bạn không thể tự thay đổi vai trò của chính mình.', 'FORBIDDEN');
+    const body = await readBody(request);
+    if (!body || typeof body !== 'object' || Array.isArray(body)
+      || Object.keys(body).some((key) => key !== 'staffRole')
+      || !Object.hasOwn(STAFF_ROLES, body.staffRole)) {
+      throw new HttpError(400, 'Vai trò chuyên viên không hợp lệ.', 'STAFF_ROLE_INVALID');
+    }
+    const roleInfo = staffRoleDetails(body.staffRole);
+    await transaction(async () => {
+      const latest = await getRecord('staff', staffId);
+      if (!latest) throw new HttpError(404, 'Không tìm thấy chuyên viên.', 'STAFF_INVALID');
+      await saveRecord('staff', { ...latest, staffRole: roleInfo.id, updatedAt: new Date().toISOString() });
+      await nextVersion('staff');
+      await withAudit(actor, 'staff.role.updated', null, { staffId, from: staffRoleDetails(latest.staffRole).id, to: roleInfo.id });
+    }, staffCollectionLock);
+    await backupIfDue();
+    return respond(response, 200, { staff: { id: staffId, staffRole: roleInfo.id, roleLabel: roleInfo.label, permissions: roleInfo.permissions } });
   }
 
   if (method === 'POST' && pathname === '/api/auth/staff-invite/accept') {
@@ -2509,12 +2641,15 @@ async function routeApi(request, response, url) {
       await withAudit(user, 'staff.invite.accepted', null, { staffId: staff.id, email: invite.email });
     });
     await createSession(user.id, response);
-    return respond(response, 201, { user: safeUser(user) });
+    return respond(response, 201, { user: await actorView(user) });
   }
 
   if (method === 'PATCH' && pathname === '/api/auth/profile') {
     assertOrigin(request);
     const actor = await requireActor(request);
+    if (actor.role === 'staff' && !hasPermission(actor, 'profile.update_self', actor.staffRole)) {
+      throw new HttpError(403, 'Vai trò của bạn không có quyền chỉnh sửa hồ sơ.', 'FORBIDDEN');
+    }
     const body = await readBody(request);
     const current = await getRecord('users', actor.id);
     const name = String(body.name ?? current.name).trim();
@@ -2526,7 +2661,7 @@ async function routeApi(request, response, url) {
     if (users.some((user) => user.id !== actor.id && user.phone === phone)) throw new HttpError(409, 'Số điện thoại này đã được sử dụng.', 'DUPLICATE_PHONE');
     const updated = { ...current, name, email, phone, updatedAt: new Date().toISOString() };
     await transaction(async () => { await saveRecord('users', updated); await nextVersion('users'); });
-    return respond(response, 200, { user: safeUser(updated) });
+    return respond(response, 200, { user: await actorView(updated) });
   }
 
   if (method === 'POST' && pathname === '/api/auth/change-password') {
@@ -2678,11 +2813,265 @@ async function routeApi(request, response, url) {
     });
   }
 
+  if (method === 'GET' && pathname === '/api/staff/day-off-requests') {
+    const actor = await requireCapability(request, 'day_off.request_self');
+    if (actor.role !== 'staff' || !actor.staffId) throw new HttpError(403, 'Chỉ chuyên viên có tài khoản liên kết mới xem được yêu cầu nghỉ.', 'FORBIDDEN');
+    const requests = (await parseRows('staffDayOffRequests')).filter((row) => row.staffId === actor.staffId)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return respond(response, 200, { requests });
+  }
+
+  if (method === 'POST' && pathname === '/api/staff/day-off-requests') {
+    assertOrigin(request);
+    const actor = await requireCapability(request, 'day_off.request_self');
+    if (actor.role !== 'staff' || !actor.staffId) throw new HttpError(403, 'Chỉ chuyên viên có tài khoản liên kết mới gửi được yêu cầu nghỉ.', 'FORBIDDEN');
+    const body = await readBody(request);
+    if (!body || typeof body !== 'object' || Array.isArray(body)
+      || Object.keys(body).some((key) => !['date', 'reason', 'note'].includes(key))) {
+      throw new HttpError(400, 'Thông tin yêu cầu nghỉ không hợp lệ.', 'VALIDATION');
+    }
+    const date = String(body.date || '');
+    const reason = typeof body.reason === 'string' ? body.reason.trim().slice(0, 300) : '';
+    const note = typeof body.note === 'string' ? body.note.trim().slice(0, 500) : '';
+    if (!validDate(date) || date < businessNow().date) throw new HttpError(400, 'Ngày nghỉ phải là hôm nay hoặc một ngày trong tương lai.', 'INVALID_DATE');
+    if (reason.length < 2) throw new HttpError(400, 'Vui lòng nhập lý do xin nghỉ.', 'REASON_REQUIRED');
+    const { dayOffRequest, affectedBookings } = await transaction(async () => {
+      const staff = await getRecord('staff', actor.staffId);
+      if (!staff || staff.active === false) throw new HttpError(403, 'Hồ sơ chuyên viên không còn hoạt động.', 'STAFF_INVALID');
+      if ((staff.daysOff || []).includes(date) || (await parseRows('staffDayOffRequests')).some(
+        (row) => row.staffId === actor.staffId && row.date === date && row.status === 'pending',
+      )) throw new HttpError(409, 'Ngày này đã nghỉ hoặc đã có yêu cầu đang chờ.', 'REQUEST_EXISTS');
+      const affectedBookings = (await staffBookingsForDate(actor.staffId, date)).map(affectedBookingView);
+      const dayOffRequest = {
+        id: `dof_${randomUUID()}`, staffId: actor.staffId, staffName: staff.name, date,
+        reason, note, status: 'pending', createdAt: new Date().toISOString(), requestedBy: actor.id,
+        affectedBookingIds: affectedBookings.map((booking) => booking.id),
+      };
+      await saveRecord('staffDayOffRequests', dayOffRequest);
+      await nextVersion('staffDayOffRequests');
+      await withAudit(actor, 'staff.day_off.requested', null, { requestId: dayOffRequest.id, staffId: actor.staffId, date, affectedBookingCount: affectedBookings.length });
+      return { dayOffRequest, affectedBookings };
+    }, bookingDateLock(date));
+    await backupIfDue();
+    return respond(response, 201, { request: dayOffRequest, affectedBookings });
+  }
+
+  if (method === 'GET' && pathname === '/api/admin/staff-day-off-requests') {
+    await requireCapability(request, 'staff.day_off.manage');
+    const requests = await Promise.all((await parseRows('staffDayOffRequests')).filter((row) => row.status === 'pending')
+      .sort((a, b) => a.date.localeCompare(b.date) || a.createdAt.localeCompare(b.createdAt))
+      .map(async (row) => ({ ...row, affectedBookings: (await staffBookingsForDate(row.staffId, row.date)).map(affectedBookingView) })));
+    return respond(response, 200, { requests });
+  }
+
+  const dayOffDecisionRoute = pathname.match(/^\/api\/admin\/staff-day-off-requests\/([^/]+)\/decision$/);
+  if (method === 'POST' && dayOffDecisionRoute) {
+    assertOrigin(request);
+    const actor = await requireCapability(request, 'staff.day_off.manage');
+    const body = await readBody(request);
+    if (!['approved', 'rejected'].includes(body.decision)) throw new HttpError(400, 'Quyết định duyệt nghỉ không hợp lệ.', 'DECISION_INVALID');
+    const adminNote = typeof body.note === 'string' ? body.note.trim().slice(0, 300) : '';
+    const requestId = decodeURIComponent(dayOffDecisionRoute[1]);
+    const initialRequest = await getRecord('staffDayOffRequests', requestId);
+    if (!initialRequest) throw new HttpError(404, 'Không tìm thấy yêu cầu nghỉ.', 'NOT_FOUND');
+    let affectedBookings = [];
+    let updatedRequest = null;
+    await transaction(async () => {
+      const current = await getRecord('staffDayOffRequests', requestId);
+      if (!current) throw new HttpError(404, 'Không tìm thấy yêu cầu nghỉ.', 'NOT_FOUND');
+      if (current.status !== 'pending') throw new HttpError(409, 'Yêu cầu nghỉ đã được xử lý.', 'REQUEST_RESOLVED');
+      if (body.decision === 'approved') await db.acquireTransactionLock(staffCollectionLock.advisoryLock);
+      const staff = await getRecord('staff', current.staffId);
+      if (!staff) throw new HttpError(404, 'Không tìm thấy hồ sơ chuyên viên.', 'STAFF_INVALID');
+      affectedBookings = (await staffBookingsForDate(current.staffId, current.date)).map(affectedBookingView);
+      if (body.decision === 'approved' && affectedBookings.length) return;
+      const now = new Date().toISOString();
+      if (body.decision === 'approved') {
+        const daysOff = [...new Set([...(staff.daysOff || []), current.date])].sort();
+        await saveRecord('staff', { ...staff, daysOff, updatedAt: now });
+        await nextVersion('staff');
+      }
+      updatedRequest = { ...current, status: body.decision, decidedAt: now, decidedBy: actor.id, adminNote };
+      await saveRecord('staffDayOffRequests', updatedRequest);
+      await nextVersion('staffDayOffRequests');
+      await withAudit(actor, `staff.day_off.${body.decision}`, null, { requestId, staffId: current.staffId, date: current.date, affectedBookingCount: affectedBookings.length });
+    }, bookingDateLock(initialRequest.date));
+    if (body.decision === 'approved' && affectedBookings.length) {
+      return respond(response, 409, { error: 'Hãy xử lý các lịch bị ảnh hưởng trước khi duyệt ngày nghỉ.', code: 'BOOKINGS_AFFECTED', impactedBookings: affectedBookings });
+    }
+    await backupIfDue();
+    return respond(response, 200, { request: updatedRequest });
+  }
+
+  const adminReassignRoute = pathname.match(/^\/api\/admin\/bookings\/([^/]+)\/reassign$/);
+  if (method === 'POST' && adminReassignRoute) {
+    assertOrigin(request);
+    const actor = await requireCapability(request, 'booking.reassign');
+    const id = decodeURIComponent(adminReassignRoute[1]);
+    const body = await readBody(request);
+    if (!body || typeof body !== 'object' || Array.isArray(body)
+      || Object.keys(body).some((key) => !['staffId', 'note'].includes(key))) {
+      throw new HttpError(400, 'Thông tin chuyển chuyên viên không hợp lệ.', 'VALIDATION');
+    }
+    const newStaffId = typeof body.staffId === 'string' ? body.staffId.trim() : '';
+    const note = typeof body.note === 'string' ? body.note.trim().slice(0, 300) : '';
+    const booking = await getRecord('bookings', id);
+    if (!booking) throw new HttpError(404, 'Không tìm thấy lịch hẹn.', 'NOT_FOUND');
+    if (!['Pending', 'Confirmed'].includes(booking.status)) throw new HttpError(409, 'Chỉ có thể chuyển chuyên viên cho lịch đang chờ hoặc đã xác nhận.', 'STATUS_INVALID');
+    if (booking.reschedulePaymentRequest) throw new HttpError(409, 'Lịch đang chờ thanh toán đổi giờ; hãy xử lý khoản này trước.', 'RESCHEDULE_PAYMENT_PENDING');
+    if (!newStaffId || newStaffId === booking.staffId) throw new HttpError(400, 'Chọn một chuyên viên khác để chuyển lịch.', 'STAFF_INVALID');
+    const now = new Date().toISOString();
+    let updated = null;
+    await transaction(async () => {
+      const latest = await getRecord('bookings', id);
+      if (!latest || Number(latest.revision || 0) !== Number(booking.revision || 0)) {
+        throw new HttpError(409, 'Lịch vừa được thay đổi. Tải lại trước khi thử lại.', 'BOOKING_CONFLICT');
+      }
+      if (!['Pending', 'Confirmed'].includes(latest.status)) throw new HttpError(409, 'Trạng thái lịch vừa thay đổi.', 'STATUS_INVALID');
+      const target = await validateStaffReassignment(latest, newStaffId);
+      updated = { ...latest, staffId: target.id, staffName: target.name, updatedAt: now,
+        assignmentHistory: [...(latest.assignmentHistory || []), { fromStaffId: latest.staffId,
+          fromStaffName: latest.staffName, toStaffId: target.id, toStaffName: target.name, at: now, by: actor.id, note }] };
+      await saveRecord('bookings', updated);
+      await nextVersion('bookings');
+      await withAudit(actor, 'booking.reassigned', id, { fromStaffId: latest.staffId, toStaffId: target.id, note });
+    }, bookingDateLock(booking.date));
+    await backupIfDue();
+    return respond(response, 200, { booking: updated });
+  }
+
+  if (method === 'GET' && pathname === '/api/admin/booking-decline-requests') {
+    await requireCapability(request, 'booking.decline.manage');
+    const requests = await Promise.all((await parseRows('bookingDeclineRequests')).filter((row) => row.status === 'pending')
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .map(async (row) => {
+        const booking = await getRecord('bookings', row.bookingId);
+        const staff = await getRecord('staff', row.staffId);
+        return { ...row, staffName: staff?.name || row.staffName,
+          booking: booking ? affectedBookingView(booking) : null };
+      }));
+    return respond(response, 200, { requests });
+  }
+
+  const declineResolveRoute = pathname.match(/^\/api\/admin\/booking-decline-requests\/([^/]+)\/resolve$/);
+  if (method === 'POST' && declineResolveRoute) {
+    assertOrigin(request);
+    const actor = await requireCapability(request, 'booking.decline.manage');
+    const body = await readBody(request);
+    if (!['keep', 'cancel', 'reassign'].includes(body.action)) throw new HttpError(400, 'Cách xử lý yêu cầu không hợp lệ.', 'ACTION_INVALID');
+    const requestId = decodeURIComponent(declineResolveRoute[1]);
+    const note = typeof body.note === 'string' ? body.note.trim().slice(0, 300) : '';
+    const initialRequest = await getRecord('bookingDeclineRequests', requestId);
+    if (!initialRequest) throw new HttpError(404, 'Không tìm thấy yêu cầu từ chối.', 'NOT_FOUND');
+    const initialBooking = await getRecord('bookings', initialRequest.bookingId);
+    if (!initialBooking) throw new HttpError(409, 'Lịch hẹn không còn tồn tại.', 'BOOKING_MISSING');
+    let updatedRequest = null;
+    let updatedBooking = null;
+    await transaction(async () => {
+      const currentRequest = await getRecord('bookingDeclineRequests', requestId);
+      if (!currentRequest) throw new HttpError(404, 'Không tìm thấy yêu cầu từ chối.', 'NOT_FOUND');
+      if (currentRequest.status !== 'pending') throw new HttpError(409, 'Yêu cầu từ chối đã được xử lý.', 'REQUEST_RESOLVED');
+      const booking = await getRecord('bookings', currentRequest.bookingId);
+      if (!booking) throw new HttpError(409, 'Lịch hẹn không còn tồn tại; yêu cầu cần được ghi nhận thủ công.', 'BOOKING_MISSING');
+      if (booking.date !== initialBooking.date || (body.action !== 'keep' && booking.staffId !== currentRequest.staffId)) throw bookingWriteConflict();
+      if (booking.reschedulePaymentRequest) throw new HttpError(409, 'Lịch đang chờ thanh toán đổi giờ; hãy xử lý khoản này trước.', 'RESCHEDULE_PAYMENT_PENDING');
+      const now = new Date().toISOString();
+      if (body.action === 'cancel') {
+        if (!['Pending', 'Confirmed'].includes(booking.status)) throw new HttpError(409, 'Trạng thái lịch hiện tại không thể hủy từ yêu cầu này.', 'STATUS_INVALID');
+        if (booking.refundRequest?.status === 'pending') throw new HttpError(409, 'Lịch đang có yêu cầu hoàn tiền cần xử lý trước.', 'REFUND_PENDING');
+        if (['paid', 'paid_with_issue'].includes(booking.paymentStatus) ||
+          booking.paymentRecords?.some((entry) => entry.type !== 'refund' && entry.amount > 0)) {
+          throw new HttpError(409, 'Lịch đã thu tiền. Hãy dùng quy trình hủy lịch và hoàn tiền hiện có.', 'REFUND_FLOW_REQUIRED');
+        }
+        const reason = note || `Chuyên viên ${currentRequest.staffName} không thể phục vụ: ${currentRequest.reasonLabel}.`;
+        updatedBooking = { ...booking, status: 'Cancelled', cancelledAt: now, cancelReason: reason, updatedAt: now,
+          ...(booking.paymentStatus === 'awaiting_payment' ? { paymentStatus: 'cancelled' } : {}),
+          statusHistory: [...(booking.statusHistory || []), { status: 'Cancelled', at: now, by: actor.id, reason }] };
+        await paymentOperations.releaseCouponForUnpaidBooking(booking);
+        await saveRecord('bookings', updatedBooking);
+        await nextVersion('bookings');
+      } else if (body.action === 'reassign') {
+        const newStaffId = typeof body.staffId === 'string' ? body.staffId.trim() : '';
+        if (!newStaffId || newStaffId === booking.staffId) throw new HttpError(400, 'Chọn một chuyên viên khác để chuyển lịch.', 'STAFF_INVALID');
+        if (!['Pending', 'Confirmed'].includes(booking.status)) throw new HttpError(409, 'Trạng thái lịch hiện tại không thể chuyển chuyên viên.', 'STATUS_INVALID');
+        const nextStaff = await validateStaffReassignment(booking, newStaffId);
+        updatedBooking = { ...booking, staffId: nextStaff.id, staffName: nextStaff.name, updatedAt: now,
+          assignmentHistory: [...(booking.assignmentHistory || []), { fromStaffId: booking.staffId, fromStaffName: booking.staffName,
+            toStaffId: nextStaff.id, toStaffName: nextStaff.name, at: now, by: actor.id, requestId }] };
+        await saveRecord('bookings', updatedBooking);
+        await nextVersion('bookings');
+      }
+      updatedRequest = { ...currentRequest, status: 'resolved', resolution: body.action, resolutionNote: note,
+        resolvedAt: now, resolvedBy: actor.id };
+      await saveRecord('bookingDeclineRequests', updatedRequest);
+      await nextVersion('bookingDeclineRequests');
+      await withAudit(actor, `booking.decline.${body.action}`, currentRequest.bookingId,
+        { requestId, staffId: currentRequest.staffId, newStaffId: updatedBooking?.staffId || null });
+    }, bookingDateLock(initialBooking.date));
+    await backupIfDue();
+    return respond(response, 200, { request: updatedRequest, ...(updatedBooking ? { booking: updatedBooking } : {}) });
+  }
+
+  const declineRequestRoute = pathname.match(/^\/api\/bookings\/([^/]+)\/decline-request$/);
+  if (method === 'POST' && declineRequestRoute) {
+    assertOrigin(request);
+    const actor = await requireCapability(request, 'booking.decline_assigned');
+    if (actor.role !== 'staff' || !actor.staffId) throw new HttpError(403, 'Chỉ chuyên viên được giao lịch mới có thể gửi yêu cầu từ chối.', 'FORBIDDEN');
+    const id = decodeURIComponent(declineRequestRoute[1]);
+    const booking = await getRecord('bookings', id);
+    if (!booking) throw new HttpError(404, 'Không tìm thấy lịch hẹn.', 'NOT_FOUND');
+    if (booking.staffId !== actor.staffId) throw new HttpError(403, 'Bạn chỉ có thể gửi yêu cầu cho lịch được giao cho mình.', 'FORBIDDEN');
+    if (!['Pending', 'Confirmed'].includes(booking.status)) throw new HttpError(409, 'Chỉ lịch đang chờ hoặc đã xác nhận mới có thể gửi yêu cầu từ chối.', 'STATUS_INVALID');
+    const body = await readBody(request);
+    const reasonLabels = {
+      health: 'Sức khỏe', service_scope: 'Không thể thực hiện dịch vụ này', schedule_conflict: 'Lịch phát sinh',
+      customer_requested_change: 'Khách yêu cầu chuyên viên khác', other: 'Lý do khác',
+    };
+    const reasonCode = typeof body.reason === 'string' ? body.reason : '';
+    const note = typeof body.note === 'string' ? body.note.trim().slice(0, 500) : '';
+    if (!Object.hasOwn(reasonLabels, reasonCode)) throw new HttpError(400, 'Vui lòng chọn lý do từ chối hợp lệ.', 'REASON_REQUIRED');
+    if (reasonCode === 'other' && !note) throw new HttpError(400, 'Vui lòng nhập ghi chú cho lý do khác.', 'REASON_REQUIRED');
+    const createdAt = new Date().toISOString();
+    const requestRow = {
+      id: `bdr_${randomUUID()}`, bookingId: id, bookingCode: booking.code || id, staffId: actor.staffId,
+      staffName: (await getRecord('staff', actor.staffId))?.name || actor.name, customerName: booking.customerName || '',
+      customerPhone: booking.customerPhone || '', serviceName: booking.serviceName || booking.serviceId || '',
+      date: booking.date, startTime: booking.startTime, endTime: booking.endTime, reasonCode,
+      reasonLabel: reasonLabels[reasonCode], note, status: 'pending', createdAt, requestedBy: actor.id,
+      smsStatus: 'not_configured',
+    };
+    await transaction(async () => {
+      const latest = await getRecord('bookings', id);
+      if (!latest || latest.staffId !== actor.staffId) throw new HttpError(403, 'Bạn chỉ có thể gửi yêu cầu cho lịch được giao cho mình.', 'FORBIDDEN');
+      if (Number(latest.revision || 0) !== Number(booking.revision || 0)) throw bookingWriteConflict();
+      if (!['Pending', 'Confirmed'].includes(latest.status)) throw new HttpError(409, 'Trạng thái lịch đã thay đổi.', 'STATUS_INVALID');
+      if ((await parseRows('bookingDeclineRequests')).some((row) => row.bookingId === id && row.staffId === actor.staffId && row.status === 'pending')) {
+        throw new HttpError(409, 'Yêu cầu từ chối của lịch này đang chờ quản trị viên xử lý.', 'REQUEST_EXISTS');
+      }
+      await saveRecord('bookingDeclineRequests', requestRow);
+      await nextVersion('bookingDeclineRequests');
+      await withAudit(actor, 'booking.decline.requested', id, { requestId: requestRow.id, reasonCode });
+    }, bookingDateLock(booking.date));
+    const smsResult = await notifyAdminSms({ ...requestRow, smsStatus: undefined });
+    const savedRequest = smsResult.status === requestRow.smsStatus ? requestRow : await transaction(async () => {
+      const latest = await getRecord('bookingDeclineRequests', requestRow.id);
+      const updated = { ...latest, smsStatus: smsResult.status };
+      await saveRecord('bookingDeclineRequests', updated);
+      await nextVersion('bookingDeclineRequests');
+      return updated;
+    }, bookingDateLock(booking.date));
+    await backupIfDue();
+    return respond(response, 201, { request: savedRequest });
+  }
+
   if (method === 'GET' && pathname === '/api/bookings') {
     const actor = await actorFrom(request);
     if (actor?.role === 'admin') return respond(response, 200, { bookings: await parseRows('bookings') });
     if (actor?.role === 'customer') return respond(response, 200, { bookings: (await parseRows('bookings')).filter((booking) => booking.userId === actor.id).map(visibleCustomerBooking) });
-    if (actor?.role === 'staff') return respond(response, 200, { bookings: (await parseRows('bookings')).filter((booking) => booking.staffId === actor.staffId).map((booking) => visibleBooking(booking, actor)) });
+    if (actor?.role === 'staff') {
+      if (!hasPermission(actor, 'booking.read_assigned', actor.staffRole)) throw new HttpError(403, 'Vai trò của bạn không được xem lịch hẹn.', 'FORBIDDEN');
+      return respond(response, 200, { bookings: (await parseRows('bookings')).filter((booking) => booking.staffId === actor.staffId).map((booking) => visibleBooking(booking, actor)) });
+    }
     const phone = normalizeVietnamPhone(url.searchParams.get('phone'));
     if (!isVietnamPhone(phone)) return respond(response, 200, { bookings: [] });
     return respond(response, 200, { bookings: (await parseRows('bookings')).filter((booking) => booking.userId == null && booking.customerPhone === phone).map(visibleCustomerBooking) });
@@ -2815,19 +3204,33 @@ async function routeApi(request, response, url) {
     const id = decodeURIComponent(bookingRoute[1]);
     const action = bookingRoute[2];
     const body = await readBody(request);
+    const actor = await actorFrom(request);
     let booking = await getRecord('bookings', id);
+    if (actor?.role === 'staff' && (!booking || booking.staffId !== actor.staffId || action !== 'status')) {
+      throw new HttpError(403, 'Bạn không có quyền cập nhật lịch này.', 'FORBIDDEN');
+    }
     if (!booking) throw new HttpError(404, 'Không tìm thấy lịch hẹn.', 'NOT_FOUND');
     if (booking.reschedulePaymentRequest
       && Date.parse(booking.reschedulePaymentRequest.expiresAt || '') <= Date.now()) {
       await paymentOperations.expirePendingPayments();
       booking = (await getRecord('bookings', id)) || booking;
     }
-    const actor = await actorFrom(request);
     if (action === 'status') {
       if (!actor || !['admin', 'staff'].includes(actor.role) || (actor.role === 'staff' && actor.staffId !== booking.staffId)) throw new HttpError(403, 'Bạn không có quyền cập nhật lịch này.', 'FORBIDDEN');
       if (booking.reschedulePaymentRequest) throw new HttpError(409, 'Đang chờ thanh toán chênh lệch; hãy đợi mã hết hạn trước khi đổi trạng thái lịch.', 'RESCHEDULE_PAYMENT_PENDING');
       const nextStatus = String(body.status || '');
       if (!STATUSES.has(nextStatus)) throw new HttpError(400, 'Trạng thái lịch không hợp lệ.', 'STATUS_INVALID');
+      if (actor.role === 'staff') {
+        const statusPermission = {
+          Confirmed: 'booking.confirm_assigned', CheckedIn: 'booking.checkin_assigned',
+          Completed: 'booking.complete_assigned', NoShow: 'booking.no_show_assigned',
+        }[nextStatus];
+        if (!statusPermission || !hasPermission(actor, statusPermission, actor.staffRole)) {
+          throw new HttpError(403, nextStatus === 'Cancelled'
+            ? 'Chuyên viên không được tự hủy lịch. Hãy gửi yêu cầu từ chối để quản trị viên xử lý.'
+            : 'Vai trò của bạn không có quyền chuyển lịch sang trạng thái này.', 'FORBIDDEN');
+        }
+      }
       const transitions = { Pending: ['Confirmed', 'Cancelled'], Confirmed: ['CheckedIn', 'Cancelled', 'NoShow'], CheckedIn: ['Completed'], Completed: [], Cancelled: [], NoShow: [] };
       if (!transitions[booking.status]?.includes(nextStatus)) throw new HttpError(409, `Không thể chuyển từ ${booking.status} sang ${nextStatus}.`, 'STATUS_INVALID');
       if (nextStatus === 'Cancelled' && booking.refundRequest?.status === 'pending') throw new HttpError(409, 'Đơn đang có yêu cầu hoàn tiền cần xử lý trước khi hủy.', 'REFUND_PENDING');
@@ -2836,18 +3239,36 @@ async function routeApi(request, response, url) {
       }
       if (nextStatus === 'NoShow' && absoluteMinute(businessNow().date, fromMin(businessNow().minutes)) < absoluteMinute(booking.date, booking.startTime)) throw new HttpError(409, 'Chỉ ghi nhận vắng mặt sau giờ hẹn.', 'TOO_EARLY');
       const now = new Date().toISOString();
-      const updated = { ...booking, status: nextStatus, updatedAt: now,
-        statusHistory: [...(booking.statusHistory || []), { status: nextStatus, at: now, by: actor.id, reason: String(body.reason || '').slice(0, 300) }],
-        ...(nextStatus === 'Cancelled' ? { cancelledAt: now, cancelReason: String(body.reason || '').slice(0, 300) } : {}),
-        ...(nextStatus === 'Completed' ? { completedAt: now } : {}),
-        ...(nextStatus === 'CheckedIn' ? { checkedInAt: now } : {}),
-        ...(nextStatus === 'NoShow' ? { noShowAt: now } : {}),
-      };
+      const reason = typeof body.reason === 'string' ? body.reason.trim().slice(0, 300) : '';
+      let updated;
       await transaction(async () => {
-        if (nextStatus === 'Cancelled') await paymentOperations.releaseCouponForUnpaidBooking(booking);
+        const latest = await getRecord('bookings', id);
+        if (!latest || Number(latest.revision || 0) !== Number(booking.revision || 0) || latest.status !== booking.status) {
+          throw new HttpError(409, 'Lịch vừa được thay đổi. Tải lại trước khi thử lại.', 'BOOKING_CONFLICT');
+        }
+        if (!transitions[latest.status]?.includes(nextStatus)) throw new HttpError(409, 'Lịch vừa được chuyển sang trạng thái khác.', 'STATUS_INVALID');
+        if (actor.role === 'staff') {
+          const staff = await getRecord('staff', actor.staffId);
+          const requiredPermission = {
+            Confirmed: 'booking.confirm_assigned', CheckedIn: 'booking.checkin_assigned',
+            Completed: 'booking.complete_assigned', NoShow: 'booking.no_show_assigned',
+          }[nextStatus];
+          if (!staff || staff.active === false || latest.staffId !== actor.staffId || !requiredPermission || !hasPermission(actor, requiredPermission, staff?.staffRole)) {
+            throw new HttpError(403, 'Quyền chuyên viên hoặc người được giao lịch vừa thay đổi.', 'FORBIDDEN');
+          }
+        }
+        if (nextStatus === 'Cancelled') await paymentOperations.releaseCouponForUnpaidBooking(latest);
+        updated = { ...latest, status: nextStatus, updatedAt: now,
+          statusHistory: [...(latest.statusHistory || []), { status: nextStatus, at: now, by: actor.id, reason: String(body.reason || '').slice(0, 300) }],
+          ...(nextStatus === 'Confirmed' ? { confirmedAt: now, confirmedBy: actor.id } : {}),
+          ...(nextStatus === 'Cancelled' ? { cancelledAt: now, cancelReason: reason } : {}),
+          ...(nextStatus === 'Completed' ? { completedAt: now } : {}),
+          ...(nextStatus === 'CheckedIn' ? { checkedInAt: now } : {}),
+          ...(nextStatus === 'NoShow' ? { noShowAt: now } : {}),
+        };
         await saveRecord('bookings', updated); await nextVersion('bookings');
-        await withAudit(actor, `booking.${nextStatus.toLowerCase()}`, id, { from: booking.status, to: nextStatus, reason: updated.cancelReason || '' });
-      });
+        await withAudit(actor, `booking.${nextStatus.toLowerCase()}`, id, { from: booking.status, to: nextStatus, reason });
+      }, bookingDateLock(booking.date));
       await backupIfDue();
       return respond(response, 200, { booking: visibleBooking(updated, actor) });
     }
@@ -2953,11 +3374,14 @@ async function routeApi(request, response, url) {
     if (!Number.isInteger(expected) || expected !== current) throw new HttpError(409, 'Dữ liệu đã được thay đổi ở thiết bị khác. Vui lòng tải lại rồi thử lại.', 'VERSION_CONFLICT');
     if (collection === 'services') await validateServiceCollection(body.records);
     await transaction(async () => {
+      if (collection === 'staff' && expected !== await versionOf(collection)) {
+        throw new HttpError(409, 'Dữ liệu chuyên viên đã thay đổi. Vui lòng tải lại rồi thử lại.', 'VERSION_CONFLICT');
+      }
       await q.deleteCollection.run(collection);
       for (const record of body.records) await q.insert.run(collection, record.id, JSON.stringify(record));
       const version = await nextVersion(collection);
       await withAudit(actor, `collection.${collection}.updated`, null, { count: body.records.length, version });
-    });
+    }, collection === 'staff' ? staffCollectionLock : undefined);
     await backupIfDue();
     return respond(response, 200, { version: await versionOf(collection) });
   }

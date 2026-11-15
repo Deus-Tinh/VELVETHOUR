@@ -339,6 +339,125 @@ function renderTabBookings(container) {
   container.querySelectorAll('.adm-bk-message').forEach((btn) => {
     btn.addEventListener('click', () => openBookingMessageModal(btn.getAttribute('data-id'), btn.getAttribute('data-kind')));
   });
+  loadAdminStaffWorkflowPanels(container);
+}
+
+async function loadAdminStaffWorkflowPanels(container) {
+  const [declineResult, leaveResult] = await Promise.allSettled([
+    apiClient.listBookingDeclineRequests(), apiClient.listStaffDayOffRequests(),
+  ]);
+  if (!container.isConnected) return;
+  const declines = declineResult.status === 'fulfilled' ? declineResult.value.requests || [] : [];
+  const leaves = leaveResult.status === 'fulfilled' ? leaveResult.value.requests || [] : [];
+  if (!declines.length && !leaves.length && declineResult.status === 'fulfilled' && leaveResult.status === 'fulfilled') return;
+
+  const activeStaff = staffService.list().filter((staff) => staff.active !== false);
+  const panel = document.createElement('section');
+  panel.className = 'admin-staff-workflow-panel';
+  panel.innerHTML = `
+    <div class="admin-staff-workflow-heading"><div><h3>Yêu cầu cần Admin xử lý</h3><p>Booking vẫn được lưu nguyên trạng cho đến khi quản trị viên chọn cách xử lý.</p></div></div>
+    ${declineResult.status === 'rejected' ? `<p class="admin-request-error">${esc(declineResult.reason?.message || 'Không tải được yêu cầu từ chối booking.')}</p>` : ''}
+    ${declines.length ? `<div class="admin-request-group"><h4>Chuyên viên từ chối booking (${declines.length})</h4>${declines.map((item) => `
+      <article class="admin-request-card">
+        <div><strong>${esc(item.booking?.code || item.bookingCode || item.bookingId)} · ${esc(item.booking?.customerName || item.customerName || 'Khách hàng')}</strong>
+          <p>${esc(item.staffName)} · ${esc(item.serviceName)} · ${esc(item.date)} ${esc(item.startTime)}–${esc(item.endTime)}</p>
+          <p>SĐT khách: ${esc(item.customerPhone || '—')} · Lý do: <strong>${esc(item.reasonLabel)}</strong>${item.note ? ` · ${esc(item.note)}` : ''}</p>
+          <small>Gửi lúc ${esc(item.createdAt)} · SMS: ${({ sent: 'đã gửi', failed: 'gửi không thành công', not_configured: 'chưa cấu hình' })[item.smsStatus] || 'đang kiểm tra'}</small>
+        </div>
+        <div class="admin-request-actions" data-decline-actions="${esc(item.id)}">
+          <select class="form-control" data-reassign-staff="${esc(item.id)}" aria-label="Chuyên viên thay thế">
+            <option value="">Chọn chuyên viên thay thế</option>
+            ${activeStaff.filter((person) => person.id !== item.staffId).map((person) => `<option value="${esc(person.id)}">${esc(person.name)}</option>`).join('')}
+          </select>
+          <button type="button" class="btn-sm btn-primary" data-decline-action="reassign" data-id="${esc(item.id)}">Chuyển lịch</button>
+          <button type="button" class="btn-sm btn-outline" data-decline-action="keep" data-id="${esc(item.id)}">Giữ booking</button>
+          <button type="button" class="btn-sm btn-outline" data-decline-action="cancel" data-id="${esc(item.id)}" style="color:#b42318;">Hủy booking</button>
+        </div>
+      </article>
+    `).join('')}</div>` : ''}
+    ${leaveResult.status === 'rejected' ? `<p class="admin-request-error">${esc(leaveResult.reason?.message || 'Không tải được yêu cầu nghỉ.')}</p>` : ''}
+    ${leaves.length ? `<div class="admin-request-group"><h4>Yêu cầu nghỉ riêng (${leaves.length})</h4>${leaves.map((item) => `
+      <article class="admin-request-card">
+        <div><strong>${esc(item.staffName)} · ${esc(item.date)}</strong>
+          <p>Lý do: ${esc(item.reason)}${item.note ? ` · ${esc(item.note)}` : ''}</p>
+          <small>Gửi lúc ${esc(item.createdAt)}</small>
+          ${item.affectedBookings?.length ? `<div class="admin-affected-bookings"><strong>Cần xử lý trước khi duyệt (${item.affectedBookings.length}):</strong><ul>${item.affectedBookings.map((booking) => `<li>
+            <div>${esc(booking.code)} · ${esc(booking.customerName)} · ${esc(booking.serviceName)} · ${esc(booking.startTime)}–${esc(booking.endTime)} · ${esc(booking.customerPhone || '—')}</div>
+            <div class="admin-request-actions">
+              <select class="form-control" data-day-off-staff="${esc(booking.id)}" aria-label="Chuyên viên thay thế"><option value="">Chọn người thay thế</option>${activeStaff.filter((person) => person.id !== item.staffId).map((person) => `<option value="${esc(person.id)}">${esc(person.name)}</option>`).join('')}</select>
+              <button type="button" class="btn-sm btn-primary" data-day-off-reassign="${esc(booking.id)}">Chuyển booking</button>
+              <button type="button" class="btn-sm btn-outline" data-day-off-cancel="${esc(booking.id)}" style="color:#b42318;">Hủy booking</button>
+            </div>
+          </li>`).join('')}</ul></div>` : '<p class="admin-no-affected">Không có booking hiện tại bị ảnh hưởng.</p>'}
+        </div>
+        <div class="admin-request-actions">
+          <button type="button" class="btn-sm btn-primary" data-day-off-decision="approved" data-id="${esc(item.id)}" ${item.affectedBookings?.length ? 'disabled title="Hãy chuyển hoặc xử lý các booking trước"' : ''}>Phê duyệt</button>
+          <button type="button" class="btn-sm btn-outline" data-day-off-decision="rejected" data-id="${esc(item.id)}">Từ chối</button>
+        </div>
+      </article>
+    `).join('')}</div>` : ''}
+  `;
+  container.prepend(panel);
+
+  panel.querySelectorAll('[data-decline-action]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const id = button.dataset.id;
+      const action = button.dataset.declineAction;
+      const staffId = panel.querySelector(`[data-reassign-staff="${CSS.escape(id)}"]`)?.value || '';
+      if (action === 'reassign' && !staffId) { showToast('Chọn chuyên viên thay thế trước.', 'danger'); return; }
+      const resolve = async () => {
+        button.disabled = true;
+        try {
+          await apiClient.resolveBookingDeclineRequest(id, { action, ...(action === 'reassign' ? { staffId } : {}) });
+          showToast(action === 'cancel' ? 'Đã hủy booking theo quyền Admin; lịch sử vẫn được lưu.' : action === 'reassign' ? 'Đã chuyển booking cho chuyên viên khác.' : 'Đã giữ booking và xử lý yêu cầu.', 'success');
+          renderTabBookings(container);
+        } catch (error) { button.disabled = false; showToast(error.message || 'Không thể xử lý yêu cầu.', 'danger'); }
+      };
+      if (action === 'cancel') showConfirmModal({
+        title: 'Hủy booking theo yêu cầu từ chối?',
+        message: 'Booking sẽ chuyển sang trạng thái Đã hủy và giữ nguyên lịch sử. Việc hoàn tiền (nếu có) cần xử lý theo luồng hoàn tiền hiện có.',
+        confirmText: 'Hủy booking', onConfirm: resolve,
+      });
+      else resolve();
+    });
+  });
+  panel.querySelectorAll('[data-day-off-decision]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      try {
+        await apiClient.decideStaffDayOffRequest(button.dataset.id, button.dataset.dayOffDecision);
+        showToast(button.dataset.dayOffDecision === 'approved' ? 'Đã duyệt ngày nghỉ; lịch tuần vẫn giữ nguyên.' : 'Đã từ chối yêu cầu nghỉ.', 'success');
+        renderTabBookings(container);
+      } catch (error) { button.disabled = false; showToast(error.message || 'Không thể xử lý yêu cầu nghỉ.', 'danger'); }
+    });
+  });
+  panel.querySelectorAll('[data-day-off-reassign]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const bookingId = button.dataset.dayOffReassign;
+      const staffId = panel.querySelector(`[data-day-off-staff="${CSS.escape(bookingId)}"]`)?.value || '';
+      if (!staffId) { showToast('Chọn chuyên viên thay thế trước.', 'danger'); return; }
+      button.disabled = true;
+      try {
+        await apiClient.reassignBooking(bookingId, staffId, 'Điều phối booking trước khi duyệt ngày nghỉ.');
+        showToast('Đã chuyển booking. Yêu cầu nghỉ vẫn chờ Admin duyệt.', 'success');
+        renderTabBookings(container);
+      } catch (error) { button.disabled = false; showToast(error.message || 'Không thể chuyển booking.', 'danger'); }
+    });
+  });
+  panel.querySelectorAll('[data-day-off-cancel]').forEach((button) => {
+    button.addEventListener('click', () => showConfirmModal({
+      title: 'Hủy booking bị ảnh hưởng?',
+      message: 'Booking sẽ được giữ lại trong lịch sử với trạng thái Đã hủy. Xử lý hoàn tiền riêng nếu có.',
+      confirmText: 'Hủy booking',
+      onConfirm: async () => {
+        try {
+          await bookingService.updateStatus(button.dataset.dayOffCancel, 'Cancelled', 'Admin xử lý booking trước khi duyệt ngày nghỉ.');
+          showToast('Đã hủy booking; lịch sử được giữ lại.', 'success');
+          renderTabBookings(container);
+        } catch (error) { showToast(error.message || 'Không thể hủy booking.', 'danger'); }
+      },
+    }));
+  });
 }
 
 function paymentSummary(booking) {
@@ -1598,6 +1717,7 @@ function renderTabStaff(container) {
           <tr>
             <th>Chuyên Viên</th>
             <th>Chức Danh &amp; Kinh Nghiệm</th>
+            <th>Vai Trò / Phân Quyền</th>
             <th>Chuyên Môn</th>
             <th>Ca Làm Việc</th>
             <th>Ngày Làm</th>
@@ -1612,6 +1732,7 @@ function renderTabStaff(container) {
             <tr>
               <td><div style="display:flex;align-items:center;gap:10px;"><img data-staff-photo src="${esc(st.imageUrl || getImageById(st.imageId).url)}" data-fallback-image="${esc(st.imageId || 'staff-01')}" alt="Ảnh ${esc(st.name)}" loading="lazy" style="width:42px;height:42px;border-radius:50%;object-fit:cover;"><strong>${esc(st.name)}</strong></div></td>
               <td>${esc(st.title)}</td>
+              <td data-staff-role-cell="${esc(st.id)}">${staffRoleSummary(st.staffRole)}</td>
               <td><div class="staff-specialty-chips">${(st.specialties || []).map((id) => `<span>${esc(categoryNames.get(id) || id)}</span>`).join('') || '<span class="is-empty">Chưa chọn</span>'}</div></td>
               <td>${esc(st.shiftStart || '10:00')} – ${esc(st.shiftEnd || '22:00')}</td>
               <td>${(st.workingDays || []).slice().sort((a, b) => ((a + 6) % 7) - ((b + 6) % 7)).map((day) => dayNames[day] || '').filter(Boolean).join(', ') || '—'}</td>
@@ -1649,7 +1770,10 @@ function renderTabStaff(container) {
   });
 
   container.querySelectorAll('.edit-staff-btn').forEach((btn) => {
-    btn.addEventListener('click', () => openStaffFormModal(staffService.get(btn.getAttribute('data-id')), categories, container));
+    btn.addEventListener('click', () => {
+      const member = staffService.get(btn.getAttribute('data-id'));
+      if (member) openStaffFormModal({ ...member, staffRole: invitationsByStaff.get(member.id)?.staffRole || member.staffRole }, categories, container);
+    });
   });
 
   container.querySelectorAll('.del-staff-btn').forEach((btn) => {
@@ -1675,12 +1799,14 @@ function renderTabStaff(container) {
         const invite = invitationsByStaff.get(member.id);
         const emailCell = container.querySelector(`[data-staff-invite-email="${CSS.escape(member.id)}"]`);
         const statusCell = container.querySelector(`[data-staff-invite-status="${CSS.escape(member.id)}"]`);
+        const roleCell = container.querySelector(`[data-staff-role-cell="${CSS.escape(member.id)}"]`);
         const inviteButton = container.querySelector(`.invite-staff-btn[data-id="${CSS.escape(member.id)}"]`);
         if (emailCell) emailCell.textContent = invite?.email || '—';
         if (statusCell) statusCell.textContent = ({
           active: 'Đã kích hoạt', pending: `Đã mời · hết hạn ${invite?.expiresAt ? formatDate(invite.expiresAt.slice(0, 10)) : 'sau 7 ngày'}`,
           expired: 'Lời mời hết hạn', inactive: 'Tài khoản bị khóa', none: 'Chưa có tài khoản',
         })[invite?.status] || 'Chưa có tài khoản';
+        if (roleCell) roleCell.innerHTML = staffRoleSummary(invite?.staffRole || member.staffRole);
         if (inviteButton) {
           inviteButton.textContent = invite?.status === 'active' ? 'Đã kích hoạt' : invite?.status === 'pending' || invite?.status === 'expired' || invite?.status === 'inactive' ? 'Gửi lại lời mời' : 'Mời đăng nhập';
           inviteButton.disabled = member.active === false || invite?.status === 'active';
@@ -1692,6 +1818,19 @@ function renderTabStaff(container) {
       showToast(error.message || 'Không tải được trạng thái lời mời.', 'danger');
     });
   }
+}
+
+function staffRolePermissionText(role) {
+  return role === 'senior_specialist'
+    ? 'Được xem và thao tác trên lịch được giao: xác nhận, check-in, hoàn tất, ghi nhận vắng mặt; gửi yêu cầu từ chối và xin nghỉ. Không có quyền tài chính hoặc quản lý nhân sự.'
+    : 'Được xem và xác nhận lịch được giao, gửi yêu cầu từ chối và xin nghỉ. Không có quyền tài chính hoặc quản lý nhân sự.';
+}
+
+function staffRoleSummary(role) {
+  const senior = role === 'senior_specialist';
+  return `<strong>${senior ? 'Chuyên viên cấp cao' : 'Chuyên viên'}</strong><small style="display:block;color:#64748b;max-width:260px;">${senior
+    ? 'Lịch được giao · xác nhận · check-in · hoàn tất · vắng mặt · xin nghỉ'
+    : 'Lịch được giao · xác nhận · yêu cầu từ chối · xin nghỉ'}</small>`;
 }
 
 function openStaffInviteForm(staff, previousInvite, container) {
@@ -1811,6 +1950,9 @@ function openStaffFormModal(existingStaff, categories, container) {
   let photoTaskError = null;
   let photoVersion = 0;
   let staffSavedLocally = false;
+  let staffProfileSynced = false;
+  let savedStaffRole = null;
+  let savedStaffId = existingStaff?.id || null;
   const currentImage = imageUrl || getImageById(existingStaff?.imageId || 'staff-01').url;
 
   body.innerHTML = `
@@ -1834,6 +1976,14 @@ function openStaffFormModal(existingStaff, categories, container) {
       <div class="form-group">
         <label for="staffTitleInput">Chức danh / kinh nghiệm <span style="color:#ef4444;">*</span></label>
         <input type="text" class="form-control" id="staffTitleInput" maxlength="100" value="${esc(existingStaff?.title || 'Therapist')}" placeholder="Ví dụ: Senior Therapist • 5 năm kinh nghiệm">
+      </div>
+      <div class="form-group">
+        <label for="staffRoleInput">Vai trò và quyền truy cập</label>
+        <select class="form-control" id="staffRoleInput">
+          <option value="specialist" ${(existingStaff?.staffRole || 'specialist') === 'specialist' ? 'selected' : ''}>Chuyên viên</option>
+          <option value="senior_specialist" ${existingStaff?.staffRole === 'senior_specialist' ? 'selected' : ''}>Chuyên viên cấp cao</option>
+        </select>
+        <small id="staffRolePermissionHint" style="display:block;color:#64748b;margin-top:6px;">${esc(staffRolePermissionText(existingStaff?.staffRole || 'specialist'))}</small>
       </div>
       <div class="form-group">
         <label>Chuyên môn phục vụ <span style="color:#ef4444;">*</span></label>
@@ -1880,6 +2030,10 @@ function openStaffFormModal(existingStaff, categories, container) {
   const closeButton = document.getElementById('closeStaffModalTop');
   if (closeButton) closeButton.onclick = closeModal;
   document.getElementById('cancelStaffFormBtn')?.addEventListener('click', closeModal);
+  document.getElementById('staffRoleInput')?.addEventListener('change', (event) => {
+    const hint = document.getElementById('staffRolePermissionHint');
+    if (hint) hint.textContent = staffRolePermissionText(event.currentTarget.value);
+  });
   document.getElementById('staffPhotoInput')?.addEventListener('change', (event) => {
     const photoInput = event.currentTarget;
     const file = photoInput.files?.[0];
@@ -1923,6 +2077,7 @@ function openStaffFormModal(existingStaff, categories, container) {
     const title = document.getElementById('staffTitleInput')?.value.trim();
     const specialties = [...body.querySelectorAll('.staff-specialty-option:checked')].map((input) => input.value);
     const workingDays = [...body.querySelectorAll('.staff-working-day-option:checked')].map((input) => Number(input.value));
+    const staffRole = document.getElementById('staffRoleInput')?.value || 'specialist';
     const data = {
       name,
       title,
@@ -1936,18 +2091,30 @@ function openStaffFormModal(existingStaff, categories, container) {
       if (!apiClient.isOnline()) throw new Error('Máy chủ ở cổng 3001 chưa kết nối. Thay đổi chưa được lưu.');
       if (!staffSavedLocally) {
         if (isEdit) staffService.update(existingStaff.id, data);
-        else staffService.create(data);
+        else savedStaffId = staffService.create(data).id;
         staffSavedLocally = true;
       }
       await apiClient.waitForCollectionSync('staff');
+      staffProfileSynced = true;
+      if (savedStaffId) {
+        if (savedStaffRole !== staffRole) {
+          await apiClient.updateStaffRole(savedStaffId, staffRole);
+          savedStaffRole = staffRole;
+        }
+        await apiClient.refresh();
+      }
       closeModal();
       showToast(isEdit ? 'Đã cập nhật hồ sơ chuyên viên trên máy chủ.' : 'Đã thêm chuyên viên mới trên máy chủ.', 'success');
       renderTabStaff(container);
     } catch (error) {
       if (staffSavedLocally) {
-        saveButton.textContent = 'Thử đồng bộ lại';
-        body.querySelectorAll('input').forEach((input) => { input.disabled = true; });
-        showToast(`Đã lưu trên máy này nhưng chưa đồng bộ lên máy chủ: ${error.message || 'lỗi kết nối.'}`, 'danger');
+        saveButton.textContent = staffProfileSynced ? savedStaffRole ? 'Thử làm mới' : 'Thử cập nhật vai trò' : 'Thử đồng bộ lại';
+        if (!staffProfileSynced) body.querySelectorAll('input').forEach((input) => { input.disabled = true; });
+        showToast(staffProfileSynced
+          ? savedStaffRole
+            ? `Hồ sơ và vai trò đã lưu; chưa làm mới được bảng chuyên viên: ${error.message || 'lỗi kết nối.'}`
+            : `Hồ sơ đã lưu; chưa cập nhật được vai trò trên máy chủ: ${error.message || 'lỗi kết nối.'}`
+          : `Đã lưu trên máy này nhưng chưa đồng bộ lên máy chủ: ${error.message || 'lỗi kết nối.'}`, 'danger');
       } else {
         saveButton.textContent = saveLabel;
         showToast(error.message || 'Không thể lưu hồ sơ chuyên viên.', 'danger');

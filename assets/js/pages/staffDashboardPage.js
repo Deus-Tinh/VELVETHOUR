@@ -10,6 +10,7 @@
 import { bookingService } from '../services/bookingService.js';
 import { authService } from '../services/authService.js';
 import { staffService } from '../services/staffSettingsPromoService.js';
+import { apiClient } from '../services/apiClient.js';
 import { todayStr, formatVND, esc, formatDate, businessNow, timeToMin } from '../core/utils.js';
 import { showToast, showConfirmModal, openChangePasswordModal } from '../ui/components.js';
 
@@ -87,6 +88,22 @@ export function renderStaffDashboardPage() {
         </div>
       </div>
 
+      ${currentUser.role === 'staff' ? `
+        <section class="staff-day-off-panel" aria-labelledby="staffDayOffTitle">
+          <div>
+            <h3 id="staffDayOffTitle">Yêu cầu nghỉ riêng</h3>
+            <p>Ngày nghỉ chỉ có hiệu lực sau khi Admin duyệt. Lịch làm việc theo tuần của bạn sẽ được giữ nguyên.</p>
+          </div>
+          <form id="staffDayOffRequestForm" class="staff-day-off-form">
+            <label>Ngày nghỉ <input type="date" name="date" required /></label>
+            <label>Lý do <input type="text" name="reason" maxlength="300" required placeholder="Ví dụ: sức khỏe, việc gia đình" /></label>
+            <label>Ghi chú <input type="text" name="note" maxlength="500" placeholder="Không bắt buộc" /></label>
+            <button type="submit" class="btn-primary btn-sm" ${apiClient.isOnline() ? '' : 'disabled'}>YÊU CẦU NGHỈ</button>
+          </form>
+          <div id="staffDayOffRequestList" class="staff-day-off-request-list" aria-live="polite">${apiClient.isOnline() ? 'Đang tải yêu cầu nghỉ…' : 'Cần kết nối máy chủ để gửi yêu cầu nghỉ.'}</div>
+        </section>
+      ` : ''}
+
       <!-- Danh Sách Lịch Phục Vụ -->
       ${currentFilteredList.length === 0 ? `
         <div style="text-align: center; padding: 50px 20px; background: #fff; border-radius: 8px;">
@@ -133,12 +150,17 @@ export function renderStaffDashboardPage() {
                     </span>
                   </td>
                   <td>
-                    ${b.status === 'Confirmed' ? `
+                    ${b.status === 'Pending' && currentUserCan(currentUser, 'booking.confirm_assigned') ? `
+                      <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                        <button type="button" class="btn-sm btn-success confirm-booking-btn" data-id="${esc(b.id)}">XÁC NHẬN</button>
+                        <button type="button" class="btn-sm btn-outline decline-booking-btn" data-id="${esc(b.id)}" style="color:#9a3412;">TỪ CHỐI</button>
+                      </div>
+                    ` : b.status === 'Confirmed' && currentUserCan(currentUser, 'booking.checkin_assigned') ? `
                       <button type="button" class="btn-sm btn-success mark-arrived-btn" data-id="${esc(b.id)}">
                         ✓ Khách đã đến
                       </button>
                       ${canStaffMarkNoShow(b) ? `<button type="button" class="btn-sm btn-outline mark-no-show-btn" data-id="${esc(b.id)}" style="color:#dc2626;">Vắng mặt</button>` : ''}
-                    ` : b.status === 'CheckedIn' ? `
+                    ` : b.status === 'CheckedIn' && currentUserCan(currentUser, 'booking.complete_assigned') ? `
                       <button type="button" class="btn-sm btn-success mark-complete-btn" data-id="${esc(b.id)}">✓ Hoàn tất</button>
                     ` : `<span style="font-size: 12px; color: #94a3b8;">—</span>`}
                   </td>
@@ -181,9 +203,27 @@ export function renderStaffDashboardPage() {
 
   // Sự kiện đánh dấu Hoàn thành ca
   containerListeners(root);
+  wireDayOffRequestForm(root, currentUser);
+  loadDayOffRequests(root);
 }
 
 function containerListeners(root) {
+  root.querySelectorAll('.confirm-booking-btn').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      try {
+        await bookingService.updateStatus(btn.getAttribute('data-id'), 'Confirmed');
+        showToast('Đã xác nhận lịch hẹn.', 'success');
+        renderStaffDashboardPage();
+      } catch (err) {
+        btn.disabled = false;
+        showToast(err.message || 'Không thể xác nhận lịch hẹn.', 'danger');
+      }
+    });
+  });
+  root.querySelectorAll('.decline-booking-btn').forEach((btn) => {
+    btn.addEventListener('click', () => openDeclineRequestDialog(btn.getAttribute('data-id')));
+  });
   root.querySelectorAll('.mark-complete-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
       const bid = btn.getAttribute('data-id');
@@ -228,6 +268,107 @@ function containerListeners(root) {
       });
     });
   });
+}
+
+function currentUserCan(user, permission) {
+  if (user?.role === 'admin') return true;
+  if (Array.isArray(user?.permissions)) return user.permissions.includes(permission);
+  return user?.role === 'staff' && ['booking.confirm_assigned', 'booking.decline_assigned', 'day_off.request_self'].includes(permission);
+}
+
+function wireDayOffRequestForm(root, currentUser) {
+  const form = root.querySelector('#staffDayOffRequestForm');
+  if (!form || currentUser?.role !== 'staff' || !currentUserCan(currentUser, 'day_off.request_self')) return;
+  const dateInput = form.querySelector('[name="date"]');
+  if (dateInput) dateInput.min = todayStr();
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const button = form.querySelector('button[type="submit"]');
+    const payload = Object.fromEntries(new FormData(form));
+    button.disabled = true;
+    try {
+      const result = await apiClient.createDayOffRequest(payload);
+      const impacted = result.affectedBookings || [];
+      if (impacted.length) {
+        const schedule = impacted.map((booking) => `${booking.code} · ${booking.date} ${booking.startTime} · ${booking.customerName}`).join('\n');
+        showToast(`Đã gửi yêu cầu. Admin cần xử lý ${impacted.length} lịch đang bị ảnh hưởng:\n${schedule}`, 'normal');
+      } else showToast('Đã gửi yêu cầu nghỉ để quản trị viên xét duyệt.', 'success');
+      form.reset();
+      loadDayOffRequests(root);
+    } catch (error) {
+      showToast(error.message || 'Không thể gửi yêu cầu nghỉ.', 'danger');
+    } finally { button.disabled = false; }
+  });
+}
+
+async function loadDayOffRequests(root) {
+  const list = root.querySelector('#staffDayOffRequestList');
+  if (!list || !apiClient.isOnline()) return;
+  try {
+    const { requests = [] } = await apiClient.listMyDayOffRequests();
+    if (!list.isConnected) return;
+    list.innerHTML = requests.length ? requests.map((request) => `
+      <div class="staff-day-off-request-row">
+        <strong>${esc(request.date)} · ${{ pending: 'Chờ duyệt', approved: 'Đã duyệt', rejected: 'Đã từ chối' }[request.status] || esc(request.status)}</strong>
+        <span>${esc(request.reason)}${request.note ? ` · ${esc(request.note)}` : ''}</span>
+      </div>
+    `).join('') : '<p class="staff-day-off-empty">Chưa có yêu cầu nghỉ.</p>';
+  } catch (error) {
+    if (list.isConnected) list.textContent = error.message || 'Không tải được yêu cầu nghỉ.';
+  }
+}
+
+function openDeclineRequestDialog(bookingId) {
+  const dialog = document.createElement('dialog');
+  dialog.className = 'staff-action-dialog';
+  dialog.innerHTML = `
+    <form method="dialog" class="staff-action-dialog-card">
+      <h3>Gửi yêu cầu từ chối lịch</h3>
+      <p>Quản trị viên sẽ xem yêu cầu và xử lý booking. Lịch của khách không bị xóa hoặc tự hủy.</p>
+      <label for="declineReason">Lý do <span aria-hidden="true">*</span></label>
+      <select id="declineReason" name="reason" required>
+        <option value="">Chọn lý do</option>
+        <option value="health">Sức khỏe</option>
+        <option value="service_scope">Không thể thực hiện dịch vụ này</option>
+        <option value="schedule_conflict">Lịch phát sinh</option>
+        <option value="customer_requested_change">Khách yêu cầu chuyên viên khác</option>
+        <option value="other">Lý do khác</option>
+      </select>
+      <label for="declineNote">Ghi chú ${'<span id="declineNoteRequired" hidden>(bắt buộc với lý do khác)</span>'}</label>
+      <textarea id="declineNote" name="note" rows="3" maxlength="500" placeholder="Thêm thông tin để Admin xử lý"></textarea>
+      <div class="staff-action-dialog-actions">
+        <button type="button" class="btn-outline" data-dialog-close>Quay lại</button>
+        <button type="submit" class="btn-primary" id="submitDeclineRequest">Gửi yêu cầu</button>
+      </div>
+    </form>`;
+  document.body.append(dialog);
+  const form = dialog.querySelector('form');
+  const reason = dialog.querySelector('#declineReason');
+  const note = dialog.querySelector('#declineNote');
+  const required = dialog.querySelector('#declineNoteRequired');
+  reason.addEventListener('change', () => {
+    const isOther = reason.value === 'other';
+    note.required = isOther;
+    required.hidden = !isOther;
+  });
+  dialog.querySelector('[data-dialog-close]').addEventListener('click', () => dialog.close());
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const submit = dialog.querySelector('#submitDeclineRequest');
+    if (!form.reportValidity()) return;
+    submit.disabled = true;
+    try {
+      await apiClient.requestBookingDecline(bookingId, { reason: reason.value, note: note.value });
+      dialog.close();
+      showToast('Đã gửi yêu cầu. Quản trị viên cần xử lý lịch này.', 'success');
+      renderStaffDashboardPage();
+    } catch (error) {
+      submit.disabled = false;
+      showToast(error.message || 'Không thể gửi yêu cầu từ chối.', 'danger');
+    }
+  });
+  dialog.addEventListener('close', () => dialog.remove(), { once: true });
+  dialog.showModal();
 }
 
 function canStaffMarkNoShow(booking) {
