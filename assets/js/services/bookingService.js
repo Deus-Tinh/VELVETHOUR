@@ -16,7 +16,7 @@ import { validate, schemas } from '../core/validators.js';
 import { isServiceBookable } from '../domain/serviceCatalogModel.js';
 import { calculatePrice as calculateDomainPrice } from '../domain/pricingService.js';
 import {
-  todayStr, businessNow, clock, timeToMin, minToTime, bookingLockEndMinute, addDays, weekday,
+  todayStr, businessNow, clock, timeToMin, minToTime, staffBookingLockEndMinute, STAFF_BOOKING_GAP_MINUTES, addDays, weekday,
   isValidDateStr, isValidTimeStr, bookingCode
 } from '../core/utils.js';
 
@@ -30,14 +30,14 @@ function staffBreaks(staff) {
 }
 
 const OCCUPYING_STATUSES = new Set(['Pending', 'Confirmed', 'CheckedIn']);
-const BUSY_SLOT_LEAD_MINUTES = 30;
 
-function activeBookingsForDay(date, excludeBookingId = null) {
+function bookingsAffectingAvailability(date, excludeBookingId = null) {
   const merged = new Map();
-  for (const booking of bookingRepo.findBy((item) => item.date === date && OCCUPYING_STATUSES.has(item.status))) merged.set(booking.id, booking);
+  const affectsDay = (booking) => booking.date === date && (OCCUPYING_STATUSES.has(booking.status) || booking.status === 'Completed');
+  for (const booking of bookingRepo.findBy(affectsDay)) merged.set(booking.id, booking);
   if (apiClient.isOnline()) {
     for (const booking of apiClient.getOccupiedSlots()) {
-      if (booking.date === date && OCCUPYING_STATUSES.has(booking.status)) merged.set(booking.id, booking);
+      if (affectsDay(booking)) merged.set(booking.id, booking);
     }
   }
   merged.delete(excludeBookingId);
@@ -205,8 +205,9 @@ export const bookingService = {
     const effEnd = Math.min(spaCloseMin, staffShiftEnd);
 
     // Lấy các lịch hẹn hiện tại của nhân viên trong ngày này (Pending & Confirmed chiếm slot, Cancelled không)
-    const dailyBookings = activeBookingsForDay(date, excludeBookingId);
+    const dailyBookings = bookingsAffectingAvailability(date, excludeBookingId);
     const existingBookings = dailyBookings.filter((booking) => booking.staffId === staffId);
+    const roomBookings = dailyBookings.filter((booking) => OCCUPYING_STATUSES.has(booking.status));
 
     const bNow = businessNow();
     const isToday = date === bNow.date;
@@ -216,7 +217,7 @@ export const bookingService = {
     const slots = [];
     for (let startMin = effStart; startMin + durationMinutes <= effEnd; startMin += slotStep) {
       const endMin = startMin + durationMinutes;
-      const lockEndMin = bookingLockEndMinute(startMin, Number(durationMinutes), slotStep);
+      const lockEndMin = staffBookingLockEndMinute(startMin, Number(durationMinutes), slotStep);
 
       // Không cho đặt slot quá khứ nếu là hôm nay
       if (isToday && startMin < bNow.minutes + minLeadTime) {
@@ -225,18 +226,18 @@ export const bookingService = {
 
       if (breaks.some((b) => startMin < timeToMin(b.endTime) && endMin > timeToMin(b.startTime))) continue;
 
-      // Khóa cả đến mốc slot tiếp theo, nhưng vẫn lưu giờ kết thúc trị liệu thực tế.
+      // Xét thời gian nghỉ của chuyên viên theo cả hai hướng giữa các lượt.
       const staffConflicts = existingBookings.filter((b) => {
         const bStart = timeToMin(b.startTime);
         const actualDuration = bookingDuration(b);
-        const bLockEnd = bookingLockEndMinute(bStart, actualDuration, slotStep);
+        const bLockEnd = staffBookingLockEndMinute(bStart, actualDuration, slotStep);
         return startMin < bLockEnd && lockEndMin > bStart;
       });
       // Distinguish starts near an occupied appointment from earlier starts that only conflict because of duration.
-      const staffConflictReason = staffConflicts.some((b) => startMin >= timeToMin(b.startTime) - BUSY_SLOT_LEAD_MINUTES)
+      const staffConflictReason = staffConflicts.some((b) => startMin >= timeToMin(b.startTime) - STAFF_BOOKING_GAP_MINUTES)
         ? 'staff'
         : staffConflicts.length ? 'duration' : null;
-      const roomNumber = availableRoomNumber(dailyBookings, startMin, endMin, settings.roomCount);
+      const roomNumber = availableRoomNumber(roomBookings, startMin, endMin, settings.roomCount);
       const hasRoomConflict = Number(settings.roomCount) > 0 && !roomNumber;
 
       slots.push({
@@ -374,14 +375,14 @@ export const bookingService = {
       }
 
       // 4. Kiểm tra xung đột lịch (Conflict Detection)
-      const existing = activeBookingsForDay(date);
+      const existing = bookingsAffectingAvailability(date);
       const staffBookings = existing.filter((booking) => booking.staffId === staffId);
-      const lockEndMin = bookingLockEndMinute(startMin, durationMinutes, slotStep);
+      const lockEndMin = staffBookingLockEndMinute(startMin, durationMinutes, slotStep);
 
       const hasConflict = staffBookings.some((b) => {
         const bStart = timeToMin(b.startTime);
         const actualDuration = bookingDuration(b);
-        const bLockEnd = bookingLockEndMinute(bStart, actualDuration, slotStep);
+        const bLockEnd = staffBookingLockEndMinute(bStart, actualDuration, slotStep);
         return startMin < bLockEnd && lockEndMin > bStart;
       });
 
@@ -389,7 +390,7 @@ export const bookingService = {
         throw new AppError('BOOKING_CONFLICT', 'Chuyên viên bận giờ này. Vui lòng chọn giờ hoặc chuyên viên khác.');
       }
 
-      const roomNumber = availableRoomNumber(existing, startMin, endMin, settings.roomCount);
+      const roomNumber = availableRoomNumber(existing.filter((booking) => OCCUPYING_STATUSES.has(booking.status)), startMin, endMin, settings.roomCount);
       if (Number(settings.roomCount) > 0 && !roomNumber) {
         throw new AppError('ROOM_CAPACITY', 'Tất cả phòng đều đã được đặt trong khung giờ này. Vui lòng chọn giờ khác.');
       }

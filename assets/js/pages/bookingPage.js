@@ -710,7 +710,7 @@ function renderScheduleStep(container) {
       <div>
         <span class="schedule-eyebrow">Bước 2 · Lịch hẹn</span>
         <h3>Chọn chuyên viên và giờ phù hợp</h3>
-        <p>Đang xem lịch cho <strong>${esc(currentService.name)}</strong>, thời lượng ${wizard.duration} phút. Chọn một ô để chọn cả chuyên viên và giờ hẹn.</p>
+        <p>Đang xem lịch cho <strong>${esc(currentService.name)}</strong>, thời lượng ${wizard.duration} phút. Chuyên viên cần ít nhất 30 phút nghỉ giữa hai lượt.</p>
       </div>
       <div class="schedule-service-chip"><span aria-hidden="true">◷</span> ${wizard.duration} phút</div>
     </div>
@@ -778,9 +778,9 @@ function renderScheduleStep(container) {
                     if (!slot.available) {
                       if (slot.unavailableReason === 'duration') {
                         return `<td><button type="button" class="schedule-slot is-duration-conflict" disabled>
-                          <span>Không đủ thời gian</span><small>${time}–${slot.endTime} trùng lịch sau</small></button></td>`;
+                          <span>Không đủ thời gian</span><small>${time}–${slot.endTime} · Cần chừa 30 phút</small></button></td>`;
                       }
-                      const reason = slot.unavailableReason === 'staff' ? 'Chuyên viên đang bận' : 'Đã hết phòng';
+                      const reason = slot.unavailableReason === 'staff' ? 'Chuyên viên bận hoặc đang nghỉ' : 'Đã hết phòng';
                       return `<td><button type="button" class="schedule-slot is-unavailable" disabled title="${esc(reason)} lúc ${time}"><span>Đã kín</span><small>${esc(reason)}</small></button></td>`;
                     }
                     const isSelected = staff.id === wizard.staffId && slot.time === wizard.time;

@@ -257,8 +257,12 @@ export function createPaymentOperations({ db, getRecord, parseRows, saveRecord, 
       // incorrectly treating the second transfer as the payment that confirms it.
       const bookings = await parseRows('bookings');
       const suppliedCode = String(payload.code || '').trim().toUpperCase();
-      const matchedBooking = bookings.find((booking) => codeInText(content, booking.paymentCode)
+      let matchedBooking = bookings.find((booking) => codeInText(content, booking.paymentCode)
         || (suppliedCode !== '' && suppliedCode === String(booking.paymentCode || '').toUpperCase())) || null;
+      if (matchedBooking?.paymentStatus === 'awaiting_payment') {
+        await db.acquireTransactionLock({ namespace: 'booking-date', key: matchedBooking.date });
+        matchedBooking = await getRecord('bookings', matchedBooking.id);
+      }
       const paymentCode = matchedBooking?.paymentCode || String(payload.code || '').trim().toUpperCase().slice(0, 80) || null;
       let status = 'unmatched';
       let reason = 'Không tìm thấy mã thanh toán chính xác trong nội dung giao dịch.';
@@ -274,7 +278,8 @@ export function createPaymentOperations({ db, getRecord, parseRows, saveRecord, 
           status = 'late'; reason = 'Giao dịch phần chênh lệch không phát sinh trong thời hạn giữ chỗ 3 phút.';
         } else if (matchedBooking.status !== 'Confirmed' || !['paid', 'paid_with_issue'].includes(matchedBooking.paymentStatus)
           || await findConflict({ staffId: adjustment.change.staffId, date: adjustment.change.date,
-            startTime: adjustment.change.startTime, durationMinutes: matchedBooking.duration, excludeId: matchedBooking.id })
+            startTime: adjustment.change.startTime, durationMinutes: matchedBooking.duration, excludeId: matchedBooking.id,
+            minimumStaffGap: Date.parse(adjustment.expiresAt) > Date.now() ? 0 : undefined })
           || await hasRoomConflict({ ...matchedBooking, ...adjustment.change })) {
           status = 'slot_taken'; reason = 'Khung giờ mới không còn khả dụng; lịch cũ vẫn được giữ.';
         } else { status = 'paid'; reason = ''; }
@@ -294,7 +299,10 @@ export function createPaymentOperations({ db, getRecord, parseRows, saveRecord, 
       } else if (!eventMilliseconds) {
         status = 'late'; reason = 'Không đọc được thời điểm giao dịch để xác minh thời hạn giữ lịch.';
       } else if (!await canStillConfirm(matchedBooking, eventMilliseconds,
-        (booking) => findConflict({ staffId: booking.staffId, date: booking.date, startTime: booking.startTime, durationMinutes: booking.duration, excludeId: booking.id }),
+        // Honor unexpired holds created before the gap changed. Released slots follow the current policy.
+        (booking) => findConflict({ staffId: booking.staffId, date: booking.date, startTime: booking.startTime,
+          durationMinutes: booking.duration, excludeId: booking.id,
+          minimumStaffGap: Date.parse(booking.paymentExpiresAt) > Date.now() ? 0 : undefined }),
         (booking) => hasRoomConflict(booking))) {
         status = Date.parse(matchedBooking.paymentExpiresAt || '') < eventMilliseconds ? 'late' : 'slot_taken';
         reason = status === 'late' ? 'Giao dịch phát sinh sau thời hạn giữ lịch.' : 'Khung giờ đã được giải phóng hoặc không còn khả dụng.';

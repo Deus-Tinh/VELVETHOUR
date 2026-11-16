@@ -314,8 +314,9 @@ export function createHolidaySaleOperations({ db, getRecord, parseRows, saveReco
       fail(409, 'Lịch cũ không còn hợp lệ để hoàn tất dời lịch.', 'RESCHEDULE_PAYMENT_STALE');
     }
     await db.acquireTransactionLock({ namespace: 'booking-date', key: request.change.date });
+    const minimumStaffGap = Date.parse(request.expiresAt) > Date.now() ? 0 : undefined;
     const slot = await assertSlot({ serviceId: booking.serviceId, duration: booking.duration, staffId: request.change.staffId,
-      date: request.change.date, startTime: request.change.startTime, excludeId: booking.id });
+      date: request.change.date, startTime: request.change.startTime, excludeId: booking.id }, { minimumStaffGap });
     const change = { ...request.change, endTime: slot.endTime, roomNumber: slot.roomNumber, staffId: slot.staff.id, staffName: slot.staff.name };
     const result = await applyConfirmedReschedule(booking, { ...request, change }, payment);
     return result.booking;

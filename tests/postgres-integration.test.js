@@ -295,7 +295,7 @@ test('SQLite backup import preserves bookings, account/payment rows and rejects 
   } finally { await rm(sourceDirectory, { recursive: true, force: true }); }
 });
 
-test('PostgreSQL API enforces 30/60/90/120-minute occupancy, adjacent slots, rooms, and concurrent booking safety', async () => {
+test('PostgreSQL API enforces treatment length, staff breaks, room capacity, and concurrent booking safety', async () => {
   await startServer();
   appPool = createPostgresPool({ env: { DATABASE_URL: appDatabaseUrl }, max: 3 });
   customerCookie = await login('khach@example.invalid', TEST_PASSWORDS.customer);
@@ -336,7 +336,9 @@ test('PostgreSQL API enforces 30/60/90/120-minute occupancy, adjacent slots, roo
   assert.equal(overlap.status, 409);
   assert.equal(overlap.payload.code, 'BOOKING_CONFLICT');
   const adjacent = await createBooking(occupiedDate, { duration: 60, staffId: 'st-04', startTime: '18:30' });
-  assert.equal(adjacent.status, 201, JSON.stringify(adjacent.payload));
+  assert.equal(adjacent.payload.code, 'BOOKING_CONFLICT');
+  const afterBreak = await createBooking(occupiedDate, { duration: 60, staffId: 'st-04', startTime: '19:00' });
+  assert.equal(afterBreak.status, 201, JSON.stringify(afterBreak.payload));
 
   await setTestRoomCount(1);
   const legacyDate = futureDate(21);

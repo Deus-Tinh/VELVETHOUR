@@ -199,15 +199,17 @@ test('a 14:00 booking marks 13:30 busy and shows a distinct duration conflict at
   };
   const row = (time) => ui.container.markup.match(new RegExp(`scope="row">${time}</th>([\\s\\S]+?)</tr>`))?.[1] || '';
   openSchedule(75);
-  assert.match(row('12:30'), /is-available/);
+  assert.match(row('12:00'), /is-available/);
+  assert.match(row('12:30'), /is-duration-conflict/);
   assert.match(row('13:00'), /is-duration-conflict" disabled/);
-  assert.match(row('13:00'), /13:00–14:15 trùng lịch sau/);
+  assert.match(row('13:00'), /13:00–14:15 · Cần chừa 30 phút/);
   assert.doesNotMatch(row('13:00'), /is-unavailable|data-time=/);
   assert.match(row('13:30'), /is-unavailable" disabled/);
   assert.match(row('14:00'), /is-unavailable" disabled/);
-  assert.match(row('15:30'), /is-available/);
+  assert.match(row('15:30'), /is-unavailable" disabled/);
+  assert.match(row('16:00'), /is-available/);
 
   openSchedule(30);
   assert.match(row('13:00'), /is-available/);
-  assert.match(row('13:30'), /is-available/);
+  assert.match(row('13:30'), /is-unavailable" disabled/);
 });

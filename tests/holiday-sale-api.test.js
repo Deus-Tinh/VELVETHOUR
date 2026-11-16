@@ -91,6 +91,19 @@ async function completeRefund(bookingId) {
   return result.payload.booking;
 }
 
+test('Rescheduling requires a full 30-minute break before the next client', async () => {
+  reset();
+  const booking = await createBooking(regular);
+  await createBooking(holiday, { startTime: '14:00' });
+  const appointment = (startTime) => request('POST', `/api/bookings/${booking.id}/reschedule/quote`,
+    { date: holiday, startTime }, customer.cookie);
+  const tooClose = await appointment('13:00');
+  assert.equal(tooClose.status, 409);
+  assert.equal(tooClose.payload.code, 'BOOKING_CONFLICT');
+  const withBreak = await appointment('12:30');
+  assert.equal(withBreak.status, 200, JSON.stringify(withBreak.payload));
+});
+
 test('sale writes require admin, same origin, valid targets and explicit revisions', async () => {
   reset();
   for (const [cookie, status] of [['', 401], [staff.cookie, 403], [customer.cookie, 403]]) {

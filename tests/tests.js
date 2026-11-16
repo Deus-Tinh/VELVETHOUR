@@ -643,7 +643,8 @@ export async function runAllTests() {
     try {
       const slots = bookingService.getAvailableSlots(date, 'st-01', 30);
       expect(slots.find((slot) => slot.time === '18:00')?.available).toBe(false);
-      expect(slots.find((slot) => slot.time === '18:30')?.available).toBe(true);
+      expect(slots.find((slot) => slot.time === '18:30')?.available).toBe(false);
+      expect(slots.find((slot) => slot.time === '19:00')?.available).toBe(true);
       const otherStaffSlots = bookingService.getAvailableSlots(date, 'st-04', 30);
       expect(otherStaffSlots.find((slot) => slot.time === '18:00')?.available).toBe(false);
       expect(otherStaffSlots.find((slot) => slot.time === '18:30')?.available).toBe(true);

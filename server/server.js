@@ -10,7 +10,7 @@ import { DEFAULT_MANAGED_USERS, DEFAULT_STAFF_ADMIN_PASSWORD, seedIfNeeded } fro
 import { sendPasswordResetOtpEmail } from './mailer.js';
 import { ADDITIONAL_PACKAGE_SEED_IDS, ADDITIONAL_THERAPY_SEED_IDS, SERVICES_SEED } from '../assets/js/data/servicesSeed.js';
 import { repos } from '../assets/js/data/repositories.js';
-import { bookingLockEndMinute, formatVND } from '../assets/js/core/utils.js';
+import { staffBookingLockEndMinute, formatVND } from '../assets/js/core/utils.js';
 import {
   getPackageComponentIds, getServiceKind, isServiceBookable, normalizeServiceRecord, PACKAGE_CATEGORY_ID,
 } from '../assets/js/domain/serviceCatalogModel.js';
@@ -602,8 +602,8 @@ const holidaySales = createHolidaySaleOperations({ db, getRecord, parseRows, sav
   canCollectAdjustment: () => publicPaymentConfig().enabled, HttpError });
 const paymentOperations = createPaymentOperations({ db, getRecord, parseRows, saveRecord, nextVersion, transaction,
   withAudit,
-  findConflict: async ({ staffId, date, startTime, durationMinutes, excludeId }) => findConflict({
-    staffId, date, startTime, durationMinutes, slotStep: Number((await getRecord('settings', 'main'))?.slotStep || 30), excludeId,
+  findConflict: async ({ staffId, date, startTime, durationMinutes, excludeId, minimumStaffGap }) => findConflict({
+    staffId, date, startTime, durationMinutes, slotStep: Number((await getRecord('settings', 'main'))?.slotStep || 30), excludeId, minimumStaffGap,
   }),
   hasRoomConflict: async (booking) => (await activeBookings()).some((other) => other.id !== booking.id
     && other.date === booking.date && Number(other.roomNumber) > 0 && Number(other.roomNumber) === Number(booking.roomNumber)
@@ -650,14 +650,14 @@ function bookingOccupiesSlot(booking, now = Date.now()) {
   if (booking.paymentStatus === 'awaiting_payment' && (!Number.isFinite(paymentExpiresAt) || paymentExpiresAt <= now)) return false;
   return true;
 }
-async function activeBookings() {
+async function activeBookings(records) {
   const now = Date.now();
-  const bookings = await parseRows('bookings');
+  const bookings = records ?? await parseRows('bookings');
   const active = bookings.filter((booking) => bookingOccupiesSlot(booking, now));
   const rescheduleHolds = bookings.filter((booking) => Date.parse(booking.reschedulePaymentRequest?.expiresAt || '') > now)
     .map((booking) => ({
       ...booking,
-      status: 'Pending', paymentStatus: 'awaiting_payment',
+      status: 'Pending', paymentStatus: 'awaiting_payment', isRescheduleHold: true,
       date: booking.reschedulePaymentRequest.change.date,
       startTime: booking.reschedulePaymentRequest.change.startTime,
       endTime: booking.reschedulePaymentRequest.change.endTime,
@@ -670,14 +670,16 @@ async function activeBookings() {
   return [...active, ...rescheduleHolds];
 }
 function overlap(aStart, aEnd, bStart, bEnd) { return aStart < bEnd && aEnd > bStart; }
-async function findConflict({ staffId, date, startTime, durationMinutes, slotStep, excludeId = null }) {
+async function findConflict({ staffId, date, startTime, durationMinutes, slotStep, excludeId = null, minimumStaffGap }) {
   const requestedStart = minOf(startTime);
-  const requestedEnd = bookingLockEndMinute(requestedStart, durationMinutes, slotStep);
-  return (await activeBookings()).some((booking) => {
+  const requestedEnd = staffBookingLockEndMinute(requestedStart, durationMinutes, slotStep, minimumStaffGap);
+  const records = await parseRows('bookings');
+  const staffBookings = [...await activeBookings(records), ...records.filter((booking) => booking.status === 'Completed')];
+  return staffBookings.some((booking) => {
     if (booking.id === excludeId || booking.staffId !== staffId || booking.date !== date) return false;
     const bookingStart = minOf(booking.startTime);
     const actualDuration = actualBookingEndMinute(booking) - bookingStart;
-    const bookingLockEnd = bookingLockEndMinute(bookingStart, actualDuration, slotStep);
+    const bookingLockEnd = staffBookingLockEndMinute(bookingStart, actualDuration, slotStep, minimumStaffGap);
     return overlap(requestedStart, requestedEnd, bookingStart, bookingLockEnd);
   });
 }
@@ -710,7 +712,7 @@ async function allocateRoom({ date, startTime, durationMinutes, excludeId = null
   if (!roomNumber) throw new HttpError(409, 'Tất cả phòng đều đã được đặt trong khung giờ này. Vui lòng chọn giờ khác.', 'ROOM_CAPACITY');
   return roomNumber;
 }
-async function assertSlot({ serviceId, duration, staffId, date, startTime, excludeId = null }) {
+async function assertSlot({ serviceId, duration, staffId, date, startTime, excludeId = null }, { minimumStaffGap } = {}) {
   if (!validDate(date) || typeof startTime !== 'string' || !timePattern.test(startTime)) throw new HttpError(400, 'Ngày hoặc giờ đặt lịch không hợp lệ.', 'INVALID_SLOT');
   if (typeof serviceId !== 'string' || !serviceId.trim()) throw new HttpError(400, 'Vui lòng chọn liệu trình hợp lệ.', 'SERVICE_INVALID');
   if (typeof staffId !== 'string' || !staffId.trim()) throw new HttpError(400, 'Vui lòng chọn chuyên viên hợp lệ.', 'STAFF_INVALID');
@@ -754,7 +756,7 @@ async function assertSlot({ serviceId, duration, staffId, date, startTime, exclu
   if (staff.breakStart && staff.breakEnd) breaks.push({ startTime: staff.breakStart, endTime: staff.breakEnd });
   if (breaks.some((item) => timePattern.test(item.startTime || '') && timePattern.test(item.endTime || '') &&
       overlap(minOf(startTime), endMinute, minOf(item.startTime), minOf(item.endTime)))) throw new HttpError(400, 'Khung giờ trùng với giờ nghỉ của chuyên viên.', 'STAFF_BREAK');
-  if (await findConflict({ staffId, date, startTime, durationMinutes, slotStep, excludeId })) {
+  if (await findConflict({ staffId, date, startTime, durationMinutes, slotStep, excludeId, minimumStaffGap })) {
     throw new HttpError(409, 'Chuyên viên bận giờ này. Vui lòng chọn giờ hoặc chuyên viên khác.', 'BOOKING_CONFLICT');
   }
   const roomNumber = await allocateRoom({ date, startTime, durationMinutes, excludeId, roomCount: settings.roomCount });
@@ -939,7 +941,8 @@ async function createBookingForActor(body, actor) {
   }
   let booking;
   await transaction(async () => {
-  const slot = await assertSlot(body);
+  const { serviceId, duration, staffId, date, startTime } = body;
+  const slot = await assertSlot({ serviceId, duration, staffId, date, startTime });
   const pricing = await holidaySales.price({ serviceId: body.serviceId, duration: slot.duration, serviceDate: body.date, promoCode: body.promoCode ?? '' });
   if (body.expectedFinalPrice !== undefined && body.expectedFinalPrice !== pricing.finalPrice) {
     throw new HttpError(409, 'Giá đã thay đổi. Vui lòng xem lại giá và xác nhận đặt lịch.', 'PRICE_CHANGED');
@@ -1191,9 +1194,10 @@ async function collectionSnapshot(actor) {
     siteContent: await siteContent.list({ publicOnly: actor?.role !== 'admin' }),
     currentUser: actor,
     versions: Object.fromEntries(await Promise.all([...ADMIN_COLLECTIONS, 'holidaySales', 'siteContent'].map(async (name) => [name, await versionOf(name)]))),
-    occupiedSlots: records.filter((row) => bookingOccupiesSlot(row) && row.date >= now.date)
-      .map(({ id, staffId, roomNumber, date, startTime, endTime, duration, status }) => ({
-        ...(actor?.role !== 'staff' || staffId === actor.staffId ? { id, status } : {}),
+    occupiedSlots: [...await activeBookings(records), ...records.filter((row) => row.status === 'Completed')]
+      .filter((row) => row.date >= now.date)
+      .map(({ id, staffId, roomNumber, date, startTime, endTime, duration, status, isRescheduleHold }) => ({
+        ...(actor?.role !== 'staff' || staffId === actor.staffId ? { id: isRescheduleHold ? `reschedule:${id}` : id, status } : {}),
         staffId, roomNumber, date, startTime, endTime, duration,
       })),
   };
