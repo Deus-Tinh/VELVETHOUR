@@ -407,6 +407,72 @@ test('Approved date-specific day off preserves weekly schedule and blocks new bo
   assert.equal(blockedBooking.payload.code, 'STAFF_UNAVAILABLE');
 });
 
+test('Admin decides an entire seven-day leave request and checks bookings across the range', async () => {
+  const admin = await login('admin@example.invalid', process.env.SERENITY_TEST_ADMIN_PASSWORD);
+  const staff = await login('linh@example.invalid', process.env.SERENITY_TEST_STAFF_PASSWORD);
+  const customer = await login('bao@example.invalid', process.env.SERENITY_TEST_CUSTOMER_PASSWORD);
+  const dates = Array.from({ length: 7 }, (_, index) => futureDate(30 + index));
+  const date = dates[0];
+  const endDate = dates.at(-1);
+  const requestPath = '/api/staff/day-off-requests';
+  const submit = (changes = {}) => request('POST', requestPath,
+    { date, endDate, reason: 'Việc gia đình', ...changes }, staff.cookie);
+  const decide = (id, decision) => request('POST', `/api/admin/staff-day-off-requests/${id}/decision`,
+    { decision }, admin.cookie);
+  const readStaff = () => JSON.parse(database.prepare('SELECT payload FROM collection_records WHERE collection = ? AND id = ?')
+    .get('staff', 'st-01').payload);
+  const before = readStaff();
+  assert.equal((await submit({ endDate: futureDate(29) })).payload.code, 'INVALID_DATE');
+  assert.equal((await submit({ endDate: '2026-02-30' })).payload.code, 'INVALID_DATE');
+  assert.equal((await submit({ endDate: futureDate(396) })).payload.code, 'DAY_OFF_RANGE_TOO_LONG');
+  assert.equal((await submit({ reason: ' ' })).payload.code, 'REASON_REQUIRED');
+
+  const first = await submit();
+  assert.equal(first.status, 201);
+  assert.equal(first.payload.request.endDate, endDate);
+  assert.equal(first.payload.request.status, 'pending');
+  assert.equal((await submit({ date: endDate, endDate: futureDate(37) })).payload.code, 'REQUEST_EXISTS');
+  assert.equal((await decide(first.payload.request.id, 'rejected')).status, 200);
+  assert.deepEqual(readStaff().daysOff, before.daysOff);
+
+  const second = await submit();
+  assert.equal(second.status, 201);
+  const id = second.payload.request.id;
+  const own = await request('GET', requestPath, undefined, staff.cookie);
+  assert.equal(own.payload.requests.find((row) => row.id === id).endDate, endDate);
+  assert.deepEqual(readStaff().daysOff, before.daysOff);
+
+  const created = await request('POST', '/api/bookings', {
+    ...bookingBody(36), date: endDate, startTime: '20:00', submissionKey: 'staff-leave-range-last-day',
+  }, customer.cookie);
+  assert.equal(created.status, 201, JSON.stringify(created.payload));
+  const bookingId = created.payload.booking.id;
+  const pending = await request('GET', '/api/admin/staff-day-off-requests', undefined, admin.cookie);
+  const leave = pending.payload.requests.find((row) => row.id === id);
+  assert.equal(leave.endDate, endDate);
+  assert.deepEqual(leave.affectedBookings.map((booking) => booking.id), [bookingId]);
+  const blocked = await decide(id, 'approved');
+  assert.equal(blocked.status, 409);
+  assert.equal(blocked.payload.code, 'BOOKINGS_AFFECTED');
+  assert.equal(blocked.payload.impactedBookings[0].date, endDate);
+  assert.deepEqual(readStaff().daysOff, before.daysOff);
+
+  const moved = await request('POST', `/api/admin/bookings/${bookingId}/reassign`,
+    { staffId: 'st-04', note: 'Chuyển để xử lý đơn nghỉ.' }, admin.cookie);
+  assert.equal(moved.status, 200, JSON.stringify(moved.payload));
+  assert.equal((await decide(id, 'approved')).status, 200);
+  const after = readStaff();
+  assert.deepEqual(after.daysOff, [...before.daysOff, ...dates].sort());
+  assert.deepEqual(after.workingDays, before.workingDays);
+  assert.equal((await submit({ date: endDate, endDate: futureDate(37) })).payload.code, 'REQUEST_EXISTS');
+  for (const [index, blockedDate] of dates.entries()) {
+    const booking = await request('POST', '/api/bookings', {
+      ...bookingBody(), date: blockedDate, submissionKey: `staff-leave-range-blocked-${index}`,
+    }, customer.cookie);
+    assert.equal(booking.payload.code, 'STAFF_UNAVAILABLE');
+  }
+});
+
 test('Staff workflow keeps 30, 60, and 90 minute booking windows intact', async () => {
   const customer = await login('khach@example.invalid', process.env.SERENITY_TEST_CUSTOMER_PASSWORD);
   const date = futureDate(55);

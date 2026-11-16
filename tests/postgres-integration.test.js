@@ -425,9 +425,11 @@ test('PostgreSQL staff permissions, decline requests and approved days off survi
   assert.ok(pendingDeclines.payload.requests.some(({ id }) => id === decline.id));
 
   const dayOffPath = '/api/staff/day-off-requests';
+  const earlierDate = futureDate(28);
+  const laterDate = futureDate(30);
   const submissions = await Promise.all([
-    request('POST', dayOffPath, { date, reason: 'Sức khỏe' }, staffCookie),
-    request('POST', dayOffPath, { date, reason: 'Sức khỏe' }, staffCookie),
+    request('POST', dayOffPath, { date: earlierDate, endDate: date, reason: 'Sức khỏe' }, staffCookie),
+    request('POST', dayOffPath, { date, endDate: laterDate, reason: 'Sức khỏe' }, staffCookie),
   ]);
   assert.deepEqual(submissions.map(({ status }) => status).sort(), [201, 409]);
   const leave = submissions.find(({ status }) => status === 201).payload.request;
@@ -445,7 +447,9 @@ test('PostgreSQL staff permissions, decline requests and approved days off survi
   assert.equal(moved.payload.booking.duration, 90);
   assert.equal(moved.payload.booking.endTime, '18:30');
   assert.equal((await decide()).status, 200);
-  assert.deepEqual((await readStaff()).workingDays, previousStaff.workingDays);
+  const staffAfterApproval = await readStaff();
+  assert.deepEqual(staffAfterApproval.workingDays, previousStaff.workingDays);
+  assert.deepEqual(staffAfterApproval.daysOff, [...previousStaff.daysOff, leave.date, leave.endDate].sort());
   const blocked = await createBooking(date, { staffId: 'st-01', startTime: '10:00' });
   assert.equal(blocked.status, 400);
   assert.equal(blocked.payload.code, 'STAFF_UNAVAILABLE');

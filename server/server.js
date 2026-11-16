@@ -762,13 +762,30 @@ async function assertSlot({ serviceId, duration, staffId, date, startTime, exclu
   return { service, staff, duration: durationMinutes, startTime, endTime, roomNumber, originalPrice: Number(variant?.price ?? service.price) };
 }
 
-async function staffBookingsForDate(staffId, date) {
-  return (await activeBookings()).filter((booking) => booking.staffId === staffId && booking.date === date)
-    .sort((a, b) => a.startTime.localeCompare(b.startTime));
+async function staffBookingsForDateRange(staffId, date, endDate = date) {
+  return (await activeBookings()).filter((booking) => booking.staffId === staffId && booking.date >= date && booking.date <= endDate)
+    .sort((a, b) => a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime));
 }
 
 function bookingDateLock(date) {
   return { advisoryLock: { namespace: 'booking-date', key: date } };
+}
+
+// Approval stores one exception per day and locks each date against concurrent bookings.
+const MAX_DAY_OFF_RANGE_DAYS = 366;
+const DAY_MS = 86_400_000;
+
+function datesInDayOffRange(date, endDate) {
+  const start = Date.parse(date);
+  const days = (Date.parse(endDate) - start) / DAY_MS + 1;
+  if (days > MAX_DAY_OFF_RANGE_DAYS) {
+    throw new HttpError(400, `Một yêu cầu nghỉ tối đa ${MAX_DAY_OFF_RANGE_DAYS} ngày.`, 'DAY_OFF_RANGE_TOO_LONG');
+  }
+  return Array.from({ length: days }, (_, index) => new Date(start + index * DAY_MS).toISOString().slice(0, 10));
+}
+
+async function lockDayOffDates(dates) {
+  for (const date of dates) await db.acquireTransactionLock(bookingDateLock(date).advisoryLock);
 }
 
 function affectedBookingView(booking) {
@@ -2850,31 +2867,35 @@ async function routeApi(request, response, url) {
     if (actor.role !== 'staff' || !actor.staffId) throw new HttpError(403, 'Chỉ chuyên viên có tài khoản liên kết mới gửi được yêu cầu nghỉ.', 'FORBIDDEN');
     const body = await readBody(request);
     if (!body || typeof body !== 'object' || Array.isArray(body)
-      || Object.keys(body).some((key) => !['date', 'reason', 'note'].includes(key))) {
+      || Object.keys(body).some((key) => !['date', 'endDate', 'reason', 'note'].includes(key))) {
       throw new HttpError(400, 'Thông tin yêu cầu nghỉ không hợp lệ.', 'VALIDATION');
     }
-    const date = String(body.date || '');
+    const date = body.date;
+    const endDate = body.endDate === undefined ? date : body.endDate;
     const reason = typeof body.reason === 'string' ? body.reason.trim().slice(0, 300) : '';
     const note = typeof body.note === 'string' ? body.note.trim().slice(0, 500) : '';
     if (!validDate(date) || date < businessNow().date) throw new HttpError(400, 'Ngày nghỉ phải là hôm nay hoặc một ngày trong tương lai.', 'INVALID_DATE');
+    if (!validDate(endDate) || endDate < date) throw new HttpError(400, 'Ngày kết thúc phải hợp lệ và không trước ngày bắt đầu.', 'INVALID_DATE');
     if (reason.length < 2) throw new HttpError(400, 'Vui lòng nhập lý do xin nghỉ.', 'REASON_REQUIRED');
+    const dates = datesInDayOffRange(date, endDate);
     const { dayOffRequest, affectedBookings } = await transaction(async () => {
+      await lockDayOffDates(dates);
       const staff = await getRecord('staff', actor.staffId);
       if (!staff || staff.active === false) throw new HttpError(403, 'Hồ sơ chuyên viên không còn hoạt động.', 'STAFF_INVALID');
-      if ((staff.daysOff || []).includes(date) || (await parseRows('staffDayOffRequests')).some(
-        (row) => row.staffId === actor.staffId && row.date === date && row.status === 'pending',
-      )) throw new HttpError(409, 'Ngày này đã nghỉ hoặc đã có yêu cầu đang chờ.', 'REQUEST_EXISTS');
-      const affectedBookings = (await staffBookingsForDate(actor.staffId, date)).map(affectedBookingView);
+      if ((staff.daysOff || []).some((day) => day >= date && day <= endDate) || (await parseRows('staffDayOffRequests')).some(
+        (row) => row.staffId === actor.staffId && row.status === 'pending' && row.date <= endDate && (row.endDate ?? row.date) >= date,
+      )) throw new HttpError(409, 'Khoảng ngày trùng ngày đã nghỉ hoặc có yêu cầu đang chờ.', 'REQUEST_EXISTS');
+      const affectedBookings = (await staffBookingsForDateRange(actor.staffId, date, endDate)).map(affectedBookingView);
       const dayOffRequest = {
-        id: `dof_${randomUUID()}`, staffId: actor.staffId, staffName: staff.name, date,
+        id: `dof_${randomUUID()}`, staffId: actor.staffId, staffName: staff.name, date, endDate,
         reason, note, status: 'pending', createdAt: new Date().toISOString(), requestedBy: actor.id,
         affectedBookingIds: affectedBookings.map((booking) => booking.id),
       };
       await saveRecord('staffDayOffRequests', dayOffRequest);
       await nextVersion('staffDayOffRequests');
-      await withAudit(actor, 'staff.day_off.requested', null, { requestId: dayOffRequest.id, staffId: actor.staffId, date, affectedBookingCount: affectedBookings.length });
+      await withAudit(actor, 'staff.day_off.requested', null, { requestId: dayOffRequest.id, staffId: actor.staffId, date, endDate, affectedBookingCount: affectedBookings.length });
       return { dayOffRequest, affectedBookings };
-    }, bookingDateLock(date));
+    });
     await backupIfDue();
     return respond(response, 201, { request: dayOffRequest, affectedBookings });
   }
@@ -2883,7 +2904,7 @@ async function routeApi(request, response, url) {
     await requireCapability(request, 'staff.day_off.manage');
     const requests = await Promise.all((await parseRows('staffDayOffRequests')).filter((row) => row.status === 'pending')
       .sort((a, b) => a.date.localeCompare(b.date) || a.createdAt.localeCompare(b.createdAt))
-      .map(async (row) => ({ ...row, affectedBookings: (await staffBookingsForDate(row.staffId, row.date)).map(affectedBookingView) })));
+      .map(async (row) => ({ ...row, affectedBookings: (await staffBookingsForDateRange(row.staffId, row.date, row.endDate)).map(affectedBookingView) })));
     return respond(response, 200, { requests });
   }
 
@@ -2897,28 +2918,31 @@ async function routeApi(request, response, url) {
     const requestId = decodeURIComponent(dayOffDecisionRoute[1]);
     const initialRequest = await getRecord('staffDayOffRequests', requestId);
     if (!initialRequest) throw new HttpError(404, 'Không tìm thấy yêu cầu nghỉ.', 'NOT_FOUND');
+    const endDate = initialRequest.endDate ?? initialRequest.date;
+    const dates = datesInDayOffRange(initialRequest.date, endDate);
     let affectedBookings = [];
     let updatedRequest = null;
     await transaction(async () => {
+      await lockDayOffDates(dates);
       const current = await getRecord('staffDayOffRequests', requestId);
       if (!current) throw new HttpError(404, 'Không tìm thấy yêu cầu nghỉ.', 'NOT_FOUND');
       if (current.status !== 'pending') throw new HttpError(409, 'Yêu cầu nghỉ đã được xử lý.', 'REQUEST_RESOLVED');
       if (body.decision === 'approved') await db.acquireTransactionLock(staffCollectionLock.advisoryLock);
       const staff = await getRecord('staff', current.staffId);
       if (!staff) throw new HttpError(404, 'Không tìm thấy hồ sơ chuyên viên.', 'STAFF_INVALID');
-      affectedBookings = (await staffBookingsForDate(current.staffId, current.date)).map(affectedBookingView);
+      affectedBookings = (await staffBookingsForDateRange(current.staffId, current.date, endDate)).map(affectedBookingView);
       if (body.decision === 'approved' && affectedBookings.length) return;
       const now = new Date().toISOString();
       if (body.decision === 'approved') {
-        const daysOff = [...new Set([...(staff.daysOff || []), current.date])].sort();
+        const daysOff = [...new Set([...(staff.daysOff || []), ...dates])].sort();
         await saveRecord('staff', { ...staff, daysOff, updatedAt: now });
         await nextVersion('staff');
       }
       updatedRequest = { ...current, status: body.decision, decidedAt: now, decidedBy: actor.id, adminNote };
       await saveRecord('staffDayOffRequests', updatedRequest);
       await nextVersion('staffDayOffRequests');
-      await withAudit(actor, `staff.day_off.${body.decision}`, null, { requestId, staffId: current.staffId, date: current.date, affectedBookingCount: affectedBookings.length });
-    }, bookingDateLock(initialRequest.date));
+      await withAudit(actor, `staff.day_off.${body.decision}`, null, { requestId, staffId: current.staffId, date: current.date, endDate, affectedBookingCount: affectedBookings.length });
+    });
     if (body.decision === 'approved' && affectedBookings.length) {
       return respond(response, 409, { error: 'Hãy xử lý các lịch bị ảnh hưởng trước khi duyệt ngày nghỉ.', code: 'BOOKINGS_AFFECTED', impactedBookings: affectedBookings });
     }

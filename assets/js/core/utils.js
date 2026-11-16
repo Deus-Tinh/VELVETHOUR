@@ -63,6 +63,9 @@ export function formatDate(ds) {
   const [y, m, d] = ds.split('-');
   return `${d}/${m}/${y}`;
 }
+export function formatDateRange(start, end = start) {
+  return start === end ? formatDate(start) : `${formatDate(start)} – ${formatDate(end)}`;
+}
 export function formatDateTime(iso) {
   if (!iso) return '—';
   return new Intl.DateTimeFormat('vi-VN', { timeZone: BUSINESS_TZ, dateStyle: 'short', timeStyle: 'short' }).format(new Date(iso));
