@@ -473,7 +473,7 @@ test('Admin decides an entire seven-day leave request and checks bookings across
   }
 });
 
-test('Staff workflow keeps 30, 60, and 90 minute booking windows intact', async () => {
+test('Staff workflow enforces the same 30-minute break for 30, 60 and 90 minute services', async () => {
   const customer = await login('khach@example.invalid', process.env.SERENITY_TEST_CUSTOMER_PASSWORD);
   const date = futureDate(55);
   const create = (serviceId, duration, startTime, key) => request('POST', '/api/bookings', {
@@ -482,20 +482,20 @@ test('Staff workflow keeps 30, 60, and 90 minute booking windows intact', async 
 
   const thirty = await create('temple-eye-relax', 30, '10:00', '30-a');
   assert.equal(thirty.status, 201);
-  const adjacentThirty = await create('temple-eye-relax', 30, '10:30', '30-b');
-  assert.equal(adjacentThirty.status, 201);
+  assert.equal((await create('temple-eye-relax', 30, '10:30', '30-gap')).payload.code, 'BOOKING_CONFLICT');
+  assert.equal((await create('temple-eye-relax', 30, '11:00', '30-b')).status, 201);
 
   const sixty = await create('signature-body', 60, '12:00', '60-a');
   assert.equal(sixty.status, 201);
   const overlapSixty = await create('signature-body', 60, '12:30', '60-overlap');
   assert.equal(overlapSixty.status, 409);
-  const adjacentSixty = await create('signature-body', 60, '13:00', '60-b');
-  assert.equal(adjacentSixty.status, 201);
+  assert.equal((await create('signature-body', 60, '13:00', '60-gap')).payload.code, 'BOOKING_CONFLICT');
+  assert.equal((await create('signature-body', 60, '13:30', '60-b')).status, 201);
 
   const ninety = await create('signature-body', 90, '15:00', '90-a');
   assert.equal(ninety.status, 201);
   const overlapNinety = await create('signature-body', 90, '16:00', '90-overlap');
   assert.equal(overlapNinety.status, 409);
-  const adjacentNinety = await create('signature-body', 90, '16:30', '90-b');
-  assert.equal(adjacentNinety.status, 201);
+  assert.equal((await create('signature-body', 90, '16:30', '90-gap')).payload.code, 'BOOKING_CONFLICT');
+  assert.equal((await create('signature-body', 90, '17:00', '90-b')).status, 201);
 });

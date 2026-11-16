@@ -56,6 +56,13 @@ export function bookingLockEndMinute(startMinute, durationMinutes, slotStep) {
   return startMinute + Math.ceil(durationMinutes / slotStep) * slotStep;
 }
 
+export const STAFF_BOOKING_GAP_MINUTES = 30;
+
+/** Hạn sớm nhất để chuyên viên bắt đầu lượt tiếp theo. */
+export function staffBookingLockEndMinute(start, duration, slotStep, minimumGap = STAFF_BOOKING_GAP_MINUTES) {
+  return Math.max(bookingLockEndMinute(start, duration, slotStep), start + duration + minimumGap);
+}
+
 const WD = ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'];
 export const weekdayLabel = (ds) => WD[weekday(ds)];
 export function formatDate(ds) {

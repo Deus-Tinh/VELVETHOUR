@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { authService } from '../assets/js/services/authService.js';
 import { bookingService } from '../assets/js/services/bookingService.js';
 import { serviceService } from '../assets/js/services/serviceService.js';
-import { staffService } from '../assets/js/services/staffSettingsPromoService.js';
+import { settingsService, staffService } from '../assets/js/services/staffSettingsPromoService.js';
+import { bookingRepo, staffRepo } from '../assets/js/data/repositories.js';
+import { apiClient } from '../assets/js/services/apiClient.js';
 import { addDays, todayStr } from '../assets/js/core/utils.js';
 
 const initialWindow = globalThis.window;
@@ -169,4 +171,45 @@ test('approved days off show gray staff columns with no selectable slots, includ
   selectDate(addDays(endDate, 1));
   assert.doesNotMatch(ui.container.markup, /class="schedule-cell-off"/);
   assert.match(ui.container.markup, /data-staff-id="staff-off"/);
+});
+
+test('a 14:00 booking marks 13:30 busy and shows a distinct duration conflict at 13:00', (t) => {
+  const ui = createBookingDocument();
+  const previousDocument = globalThis.document;
+  globalThis.document = ui.document;
+  t.after(() => restoreGlobal('document', previousDocument));
+  const date = addDays(todayStr(), 2);
+  const service = { ...services[1], duration: 75, variants: [{ duration: 75, price: 350000 }, { duration: 30, price: 200000 }] };
+  const staff = { id: 'staff-1', name: 'Khánh Sky', workingDays: [0, 1, 2, 3, 4, 5, 6] };
+  t.mock.method(authService, 'getCurrentUser', () => ({ id: 'nearby-booking-test', role: 'customer' }));
+  t.mock.method(serviceService, 'listActive', () => [service]);
+  t.mock.method(serviceService, 'get', () => service);
+  t.mock.method(staffService, 'forService', () => [staff]);
+  t.mock.method(staffRepo, 'getById', () => staff);
+  t.mock.method(settingsService, 'get', () => ({ slotStep: 30 }));
+  t.mock.method(bookingRepo, 'findBy', () => []);
+  t.mock.method(apiClient, 'isOnline', () => true);
+  t.mock.method(apiClient, 'getOccupiedSlots', () => [
+    { id: 'afternoon', staffId: staff.id, date, startTime: '14:00', endTime: '15:15', duration: 75, status: 'Confirmed' },
+  ]);
+
+  const openSchedule = (duration) => {
+    renderBookingPage(service.id, duration, { date });
+    ui.document.getElementById('step1NextBtn').listeners.get('click')();
+  };
+  const row = (time) => ui.container.markup.match(new RegExp(`scope="row">${time}</th>([\\s\\S]+?)</tr>`))?.[1] || '';
+  openSchedule(75);
+  assert.match(row('12:00'), /is-available/);
+  assert.match(row('12:30'), /is-duration-conflict/);
+  assert.match(row('13:00'), /is-duration-conflict" disabled/);
+  assert.match(row('13:00'), /13:00–14:15 · Cần chừa 30 phút/);
+  assert.doesNotMatch(row('13:00'), /is-unavailable|data-time=/);
+  assert.match(row('13:30'), /is-unavailable" disabled/);
+  assert.match(row('14:00'), /is-unavailable" disabled/);
+  assert.match(row('15:30'), /is-unavailable" disabled/);
+  assert.match(row('16:00'), /is-available/);
+
+  openSchedule(30);
+  assert.match(row('13:00'), /is-available/);
+  assert.match(row('13:30'), /is-unavailable" disabled/);
 });

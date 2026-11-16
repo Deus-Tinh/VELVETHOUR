@@ -142,14 +142,27 @@ test('11. Overlapping booking is rejected while the first booking holds its slot
   assert.equal(readRecord('bookings', first.id).paymentStatus, 'awaiting_payment');
 });
 
-test('12. Adjacent booking windows are accepted without a false overlap', async () => {
+test('12. A staff member needs 30 minutes before and after every appointment', async () => {
   const date = futureDate(22);
-  const first = await createBooking(date, { submissionKey: randomUUID(), startTime: '10:00' });
-  const adjacent = await request('POST', '/api/bookings', bookingBody(date, { submissionKey: randomUUID(), startTime: '11:00' }), customer.cookie);
-  assert.equal(adjacent.status, 201, JSON.stringify(adjacent.payload));
-  assert.notEqual(adjacent.payload.booking.id, first.id);
-  assert.equal(adjacent.payload.booking.startTime, '11:00');
-  assert.equal(adjacent.payload.booking.paymentStatus, 'awaiting_payment');
+  const first = await createBooking(date, { startTime: '14:00' });
+  const tryBooking = (startTime) => request('POST', '/api/bookings', bookingBody(date, { startTime }), customer.cookie);
+  assert.equal((await tryBooking('13:00')).payload.code, 'BOOKING_CONFLICT');
+  assert.equal((await tryBooking('15:00')).payload.code, 'BOOKING_CONFLICT');
+  assert.equal((await tryBooking('12:30')).status, 201);
+  writeRecord('bookings', { ...first, status: 'Completed', paymentStatus: 'paid' });
+  const snapshot = await request('GET', '/api/bootstrap', undefined, customer.cookie);
+  assert.ok(snapshot.payload.occupiedSlots.some((slot) => slot.id === first.id && slot.status === 'Completed'));
+  assert.equal((await tryBooking('15:00')).payload.code, 'BOOKING_CONFLICT');
+  assert.equal((await tryBooking('15:30')).status, 201);
+});
+
+test('An unexpired legacy hold can still be paid when the next appointment is adjacent', async () => {
+  const date = futureDate(32);
+  const held = await createBooking(date, { startTime: '13:00' });
+  const neighbor = await createBooking(date, { startTime: '14:30' });
+  writeRecord('bookings', { ...neighbor, startTime: '14:00', endTime: '15:00' });
+  assert.equal((await sendPayment(held)).status, 'paid');
+  assert.equal(readRecord('bookings', held.id).status, 'Confirmed');
 });
 
 test('90-minute bookings retain their duration in the occupied-slot snapshot', async () => {
@@ -170,7 +183,7 @@ test('90-minute bookings retain their duration in the occupied-slot snapshot', a
   assert.equal(overlap.payload.code, 'BOOKING_CONFLICT');
 
   const adjacent = await request('POST', '/api/bookings', bookingBody(date, {
-    duration: 60, staffId: 'st-03', startTime: '18:30', submissionKey: randomUUID(),
+    duration: 60, staffId: 'st-03', startTime: '19:00', submissionKey: randomUUID(),
   }), customer.cookie);
   assert.equal(adjacent.status, 201, JSON.stringify(adjacent.payload));
 });
