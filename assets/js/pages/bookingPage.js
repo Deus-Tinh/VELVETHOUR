@@ -776,6 +776,10 @@ function renderScheduleStep(container) {
                     const slot = availabilityByStaff.get(staff.id)?.get(time);
                     if (!slot) return '<td><span class="schedule-slot-empty" title="Ngoài ca làm việc hoặc không nhận khung giờ này">—</span></td>';
                     if (!slot.available) {
+                      if (slot.unavailableReason === 'duration') {
+                        return `<td><button type="button" class="schedule-slot is-duration-conflict" disabled>
+                          <span>Không đủ thời gian</span><small>${time}–${slot.endTime} trùng lịch sau</small></button></td>`;
+                      }
                       const reason = slot.unavailableReason === 'staff' ? 'Chuyên viên đang bận' : 'Đã hết phòng';
                       return `<td><button type="button" class="schedule-slot is-unavailable" disabled title="${esc(reason)} lúc ${time}"><span>Đã kín</span><small>${esc(reason)}</small></button></td>`;
                     }
@@ -793,7 +797,7 @@ function renderScheduleStep(container) {
       `}
 
       <div class="schedule-legend" aria-label="Chú giải lịch">
-      <span><i class="is-free"></i>Còn lịch</span><span><i class="is-busy"></i>Đã kín hoặc chuyên viên bận</span><span><i class="is-outside"></i>Ngoài ca</span><span><i class="is-day-off"></i>Nghỉ ngày này</span>
+      <span><i class="is-free"></i>Còn lịch</span><span><i class="is-busy"></i>Đã kín hoặc chuyên viên bận</span><span><i class="is-duration-conflict"></i>Không đủ thời gian</span><span><i class="is-outside"></i>Ngoài ca</span><span><i class="is-day-off"></i>Nghỉ ngày này</span>
       </div>
     </section>
 

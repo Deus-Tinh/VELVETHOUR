@@ -2145,6 +2145,13 @@ footer.site-footer {
   cursor: not-allowed;
 }
 .schedule-slot.is-unavailable > small { color: #9a9389; font-size: 9px; }
+.schedule-slot.is-duration-conflict {
+  border-color: #ebd4ae;
+  background: #fff9ee;
+  color: #76531f;
+  cursor: not-allowed;
+}
+.schedule-slot.is-duration-conflict > small { color: inherit; font-size: 9px; }
 .schedule-slot-empty { color: #b3ada4; font-size: 16px; }
 .schedule-legend {
   display: flex;
@@ -2158,6 +2165,7 @@ footer.site-footer {
 .schedule-legend i { width: 10px; height: 10px; border-radius: 3px; }
 .schedule-legend i.is-free { border: 1px solid #b9d0ba; background: #f2f8f2; }
 .schedule-legend i.is-busy { border: 1px solid #e5dfd5; background: #f0ede8; }
+.schedule-legend i.is-duration-conflict { border: 1px solid #ebd4ae; background: #fff9ee; }
 .schedule-legend i.is-outside { background: #d4d0ca; }
 .schedule-no-results {
   padding: 25px 18px;

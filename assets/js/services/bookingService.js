@@ -30,6 +30,7 @@ function staffBreaks(staff) {
 }
 
 const OCCUPYING_STATUSES = new Set(['Pending', 'Confirmed', 'CheckedIn']);
+const BUSY_SLOT_LEAD_MINUTES = 30;
 
 function activeBookingsForDay(date, excludeBookingId = null) {
   const merged = new Map();
@@ -225,20 +226,24 @@ export const bookingService = {
       if (breaks.some((b) => startMin < timeToMin(b.endTime) && endMin > timeToMin(b.startTime))) continue;
 
       // Khóa cả đến mốc slot tiếp theo, nhưng vẫn lưu giờ kết thúc trị liệu thực tế.
-      const hasConflict = existingBookings.some((b) => {
+      const staffConflicts = existingBookings.filter((b) => {
         const bStart = timeToMin(b.startTime);
         const actualDuration = bookingDuration(b);
         const bLockEnd = bookingLockEndMinute(bStart, actualDuration, slotStep);
         return startMin < bLockEnd && lockEndMin > bStart;
       });
+      // Distinguish starts near an occupied appointment from earlier starts that only conflict because of duration.
+      const staffConflictReason = staffConflicts.some((b) => startMin >= timeToMin(b.startTime) - BUSY_SLOT_LEAD_MINUTES)
+        ? 'staff'
+        : staffConflicts.length ? 'duration' : null;
       const roomNumber = availableRoomNumber(dailyBookings, startMin, endMin, settings.roomCount);
       const hasRoomConflict = Number(settings.roomCount) > 0 && !roomNumber;
 
       slots.push({
         time: minToTime(startMin),
         endTime: minToTime(endMin),
-        available: !hasConflict && !hasRoomConflict,
-        unavailableReason: hasConflict ? 'staff' : hasRoomConflict ? 'room' : null,
+        available: !staffConflictReason && !hasRoomConflict,
+        unavailableReason: staffConflictReason ?? (hasRoomConflict ? 'room' : null),
         roomNumber
       });
     }
