@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { authService } from '../assets/js/services/authService.js';
+import { bookingService } from '../assets/js/services/bookingService.js';
 import { serviceService } from '../assets/js/services/serviceService.js';
 import { staffService } from '../assets/js/services/staffSettingsPromoService.js';
+import { addDays, todayStr } from '../assets/js/core/utils.js';
 
 const initialWindow = globalThis.window;
 globalThis.window = {};
@@ -129,4 +131,42 @@ test('booking catalog disables services without a suitable specialist and select
     serviceService.componentServices = originals.componentServices;
     staffService.forService = originals.forService;
   }
+});
+
+test('approved days off show gray staff columns with no selectable slots, including when all staff are off', (t) => {
+  const ui = createBookingDocument();
+  const previousDocument = globalThis.document;
+  globalThis.document = ui.document;
+  t.after(() => restoreGlobal('document', previousDocument));
+  const date = addDays(todayStr(), 2);
+  const endDate = addDays(date, 1);
+  const service = services[1];
+  const staff = [
+    { id: 'staff-off', name: 'Chuyên viên nghỉ', daysOff: [date, endDate] },
+    { id: 'staff-working', name: 'Chuyên viên làm việc', daysOff: [] },
+  ];
+  t.mock.method(authService, 'getCurrentUser', () => ({ id: 'leave-schedule-test', role: 'customer' }));
+  t.mock.method(serviceService, 'listActive', () => [service]);
+  t.mock.method(serviceService, 'get', () => service);
+  t.mock.method(staffService, 'forService', () => staff);
+  t.mock.method(bookingService, 'getAvailableSlots', () => [{ time: '10:00', endTime: '11:00', available: true }]);
+
+  const selectDate = (selectedDate) => {
+    renderBookingPage(service.id, 60, { date: selectedDate });
+    ui.document.getElementById('step1NextBtn').listeners.get('click')();
+  };
+  selectDate(date);
+  assert.match(ui.container.markup, /schedule-person-head is-day-off[^>]*>[\s\S]*?Chuyên viên nghỉ/);
+  assert.match(ui.container.markup, /class="schedule-cell-off"[^>]*>[\s\S]*?NGHỈ/);
+  assert.doesNotMatch(ui.container.markup, /data-staff-id="staff-off"/);
+  assert.match(ui.container.markup, /data-staff-id="staff-working"/);
+
+  staff[1].daysOff = [endDate];
+  selectDate(endDate);
+  assert.equal((ui.container.markup.match(/class="schedule-cell-off"/g) || []).length, 2);
+  assert.doesNotMatch(ui.container.markup, /data-staff-id=/);
+
+  selectDate(addDays(endDate, 1));
+  assert.doesNotMatch(ui.container.markup, /class="schedule-cell-off"/);
+  assert.match(ui.container.markup, /data-staff-id="staff-off"/);
 });

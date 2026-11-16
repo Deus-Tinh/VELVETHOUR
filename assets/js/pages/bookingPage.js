@@ -682,9 +682,10 @@ function renderScheduleStep(container) {
   }
   if (!wizard.date || wizard.date < todayStr()) wizard.date = todayStr();
 
+  const staffIsOff = (staff) => (staff.daysOff || []).includes(wizard.date);
   const availabilityByStaff = new Map(staffList.map((staff) => [
     staff.id,
-    new Map(bookingService.getAvailableSlots(wizard.date, staff.id, wizard.duration).map((slot) => [slot.time, slot]))
+    new Map(staffIsOff(staff) ? [] : bookingService.getAvailableSlots(wizard.date, staff.id, wizard.duration).map((slot) => [slot.time, slot]))
   ]));
   const searchTerm = scheduleStaffQuery.trim().toLocaleLowerCase('vi');
   const visibleStaff = staffList.filter((staff) =>
@@ -700,8 +701,8 @@ function renderScheduleStep(container) {
   const selectedStaff = staffList.find((staff) => staff.id === wizard.staffId);
   const selectedSlot = selectedStaff ? availabilityByStaff.get(selectedStaff.id)?.get(wizard.time) : null;
   const dateLabel = `${wizard.date.split('-')[2]}/${wizard.date.split('-')[1]}/${wizard.date.split('-')[0]}`;
-  const staffIsOff = (staff) => (staff.daysOff || []).includes(wizard.date);
-  const allVisibleStaffOff = visibleStaff.length > 0 && visibleStaff.every(staffIsOff);
+  const showDayOffColumn = visibleStaff.some(staffIsOff);
+  const scheduleTimes = visibleTimes.length ? visibleTimes : [null];
   const staffPhoto = (staff) => staff.imageUrl || getImageById(staff.imageId || 'staff-01').url;
 
   container.innerHTML = `
@@ -743,10 +744,8 @@ function renderScheduleStep(container) {
 
       ${!visibleStaff.length ? `
         <div class="schedule-no-results" role="status">Không tìm thấy chuyên viên “${esc(scheduleStaffQuery)}”. Hãy thử tên khác.</div>
-      ` : !visibleTimes.length ? `
-        <div class="schedule-no-results ${allVisibleStaffOff ? 'schedule-day-off-notice' : ''}" role="status">${allVisibleStaffOff
-          ? `CHUYÊN VIÊN ĐANG NGHỈ NGÀY ${dateLabel}. Lịch làm việc định kỳ của chuyên viên vẫn được giữ nguyên; vui lòng chọn ngày khác.`
-          : `Không có khung giờ làm việc phù hợp trong ngày ${dateLabel}. Vui lòng chọn ngày khác hoặc tìm chuyên viên khác.`}</div>
+      ` : !visibleTimes.length && !showDayOffColumn ? `
+        <div class="schedule-no-results" role="status">Không có khung giờ làm việc phù hợp trong ngày ${dateLabel}. Vui lòng chọn ngày khác hoặc tìm chuyên viên khác.</div>
       ` : `
         ${staffList.length > 2 ? `<div class="schedule-scroll-tools" id="scheduleScrollTools" hidden>
           <span><i aria-hidden="true">↔</i> Cuộn để xem ${visibleStaff.length} chuyên viên</span>
@@ -761,7 +760,7 @@ function renderScheduleStep(container) {
             <thead><tr>
               <th class="schedule-time-head" scope="col">Giờ</th>
               ${visibleStaff.map((staff) => `
-                <th class="schedule-person-head ${staff.id === wizard.staffId ? 'is-selected' : ''}" scope="col">
+                <th class="schedule-person-head ${staffIsOff(staff) ? 'is-day-off' : ''} ${staff.id === wizard.staffId ? 'is-selected' : ''}" scope="col">
                   <div class="schedule-person">
                     <img src="${esc(staffPhoto(staff))}" data-fallback-image="${esc(staff.imageId || 'staff-01')}" alt="" loading="lazy" />
                   <span class="schedule-person-copy"><strong>${esc(staff.name)}</strong><small>${staffIsOff(staff) ? 'Nghỉ ngày này' : esc(staff.title || 'Chuyên viên trị liệu')}</small></span>
@@ -770,11 +769,11 @@ function renderScheduleStep(container) {
               `).join('')}
             </tr></thead>
             <tbody>
-              ${visibleTimes.map((time) => `
-                <tr><th class="schedule-time-cell" scope="row">${time}</th>
+              ${scheduleTimes.map((time) => `
+                <tr><th class="schedule-time-cell" scope="row">${time || '—'}</th>
                   ${visibleStaff.map((staff) => {
+                    if (staffIsOff(staff)) return '<td class="schedule-cell-off"><span class="schedule-slot-off" aria-label="Chuyên viên nghỉ ngày này">NGHỈ</span></td>';
                     const slot = availabilityByStaff.get(staff.id)?.get(time);
-                    if (!slot && staffIsOff(staff)) return '<td><span class="schedule-slot-off" aria-label="Chuyên viên nghỉ ngày này">NGHỈ</span></td>';
                     if (!slot) return '<td><span class="schedule-slot-empty" title="Ngoài ca làm việc hoặc không nhận khung giờ này">—</span></td>';
                     if (!slot.available) {
                       const reason = slot.unavailableReason === 'staff' ? 'Chuyên viên đang bận' : 'Đã hết phòng';
@@ -802,7 +801,7 @@ function renderScheduleStep(container) {
       ${selectedSlot?.available && selectedStaff ? `
         <span class="schedule-selection-icon" aria-hidden="true">✓</span><span><small>Lịch đang chọn</small><strong>${esc(selectedStaff.name)} · ${dateLabel} · ${selectedSlot.time}–${selectedSlot.endTime}</strong></span>
       ` : `
-        <span class="schedule-selection-icon" aria-hidden="true">○</span><span><small>Chưa chọn lịch</small><strong>Chọn một ô còn lịch trong bảng</strong></span>
+        <span class="schedule-selection-icon" aria-hidden="true">○</span><span><small>Chưa chọn lịch</small><strong>${visibleTimes.length ? 'Chọn một ô còn lịch trong bảng' : 'Chọn ngày hoặc chuyên viên khác'}</strong></span>
       `}
     </div>
 

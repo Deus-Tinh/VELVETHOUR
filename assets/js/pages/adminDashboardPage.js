@@ -21,7 +21,7 @@ import { authService } from '../services/authService.js';
 import { apiClient } from '../services/apiClient.js';
 import { resetDemoData } from '../data/seed.js';
 import { drawRevenueChart } from '../ui/canvasChart.js';
-import { formatVND, esc, formatDate } from '../core/utils.js';
+import { formatVND, esc, formatDate, formatDateRange } from '../core/utils.js';
 import { businessNow, timeToMin } from '../core/utils.js';
 import { showToast, showConfirmModal, openChangePasswordModal } from '../ui/components.js';
 import { getImageById, getServiceImage } from '../imageManifest.js';
@@ -381,11 +381,11 @@ async function loadAdminStaffWorkflowPanels(container) {
     ${leaveResult.status === 'rejected' ? `<p class="admin-request-error">${esc(leaveResult.reason?.message || 'Không tải được yêu cầu nghỉ.')}</p>` : ''}
     ${leaves.length ? `<div class="admin-request-group"><h4>Yêu cầu nghỉ riêng (${leaves.length})</h4>${leaves.map((item) => `
       <article class="admin-request-card">
-        <div><strong>${esc(item.staffName)} · ${esc(item.date)}</strong>
+        <div><strong>${esc(item.staffName)} · ${formatDateRange(item.date, item.endDate)}</strong>
           <p>Lý do: ${esc(item.reason)}${item.note ? ` · ${esc(item.note)}` : ''}</p>
           <small>Gửi lúc ${esc(item.createdAt)}</small>
           ${item.affectedBookings?.length ? `<div class="admin-affected-bookings"><strong>Cần xử lý trước khi duyệt (${item.affectedBookings.length}):</strong><ul>${item.affectedBookings.map((booking) => `<li>
-            <div>${esc(booking.code)} · ${esc(booking.customerName)} · ${esc(booking.serviceName)} · ${esc(booking.startTime)}–${esc(booking.endTime)} · ${esc(booking.customerPhone || '—')}</div>
+            <div>${esc(booking.code)} · ${esc(booking.customerName)} · ${esc(booking.serviceName)} · ${formatDate(booking.date)} ${esc(booking.startTime)}–${esc(booking.endTime)} · ${esc(booking.customerPhone || '—')}</div>
             <div class="admin-request-actions">
               <select class="form-control" data-day-off-staff="${esc(booking.id)}" aria-label="Chuyên viên thay thế"><option value="">Chọn người thay thế</option>${activeStaff.filter((person) => person.id !== item.staffId).map((person) => `<option value="${esc(person.id)}">${esc(person.name)}</option>`).join('')}</select>
               <button type="button" class="btn-sm btn-primary" data-day-off-reassign="${esc(booking.id)}">Chuyển booking</button>
@@ -437,7 +437,7 @@ async function loadAdminStaffWorkflowPanels(container) {
   panel.querySelectorAll('[data-day-off-reassign]').forEach((button) => {
     button.addEventListener('click', async () => {
       const bookingId = button.dataset.dayOffReassign;
-      const staffId = panel.querySelector(`[data-day-off-staff="${CSS.escape(bookingId)}"]`)?.value || '';
+      const staffId = button.closest('.admin-request-actions')?.querySelector('[data-day-off-staff]')?.value || '';
       if (!staffId) { showToast('Chọn chuyên viên thay thế trước.', 'danger'); return; }
       button.disabled = true;
       try {

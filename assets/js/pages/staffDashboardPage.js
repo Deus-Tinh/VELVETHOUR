@@ -11,7 +11,7 @@ import { bookingService } from '../services/bookingService.js';
 import { authService } from '../services/authService.js';
 import { staffService } from '../services/staffSettingsPromoService.js';
 import { apiClient } from '../services/apiClient.js';
-import { todayStr, formatVND, esc, formatDate, businessNow, timeToMin } from '../core/utils.js';
+import { todayStr, formatVND, esc, formatDate, formatDateRange, businessNow, timeToMin } from '../core/utils.js';
 import { showToast, showConfirmModal, openChangePasswordModal } from '../ui/components.js';
 
 let filterDate = todayStr();
@@ -93,10 +93,11 @@ export function renderStaffDashboardPage() {
         <section class="staff-day-off-panel" aria-labelledby="staffDayOffTitle">
           <div>
             <h3 id="staffDayOffTitle">Yêu cầu nghỉ riêng</h3>
-            <p>Ngày nghỉ chỉ có hiệu lực sau khi Admin duyệt. Lịch làm việc theo tuần của bạn sẽ được giữ nguyên.</p>
+            <p>Chọn ngày bắt đầu và ngày kết thúc (chọn cùng ngày nếu nghỉ một ngày). Đơn chỉ có hiệu lực sau khi Admin duyệt.</p>
           </div>
           <form id="staffDayOffRequestForm" class="staff-day-off-form">
-            <label>Ngày nghỉ <input type="date" name="date" required /></label>
+            <label>Từ ngày <input type="date" name="date" required /></label>
+            <label>Đến ngày <input type="date" name="endDate" required /></label>
             <label>Lý do <input type="text" name="reason" maxlength="300" required placeholder="Ví dụ: sức khỏe, việc gia đình" /></label>
             <label>Ghi chú <input type="text" name="note" maxlength="500" placeholder="Không bắt buộc" /></label>
             <button type="submit" class="btn-primary btn-sm" ${apiClient.isOnline() ? '' : 'disabled'}>YÊU CẦU NGHỈ</button>
@@ -296,7 +297,13 @@ function wireDayOffRequestForm(root, currentUser) {
   const form = root.querySelector('#staffDayOffRequestForm');
   if (!form || currentUser?.role !== 'staff' || !currentUserCan(currentUser, 'day_off.request_self')) return;
   const dateInput = form.querySelector('[name="date"]');
-  if (dateInput) dateInput.min = todayStr();
+  const endDateInput = form.querySelector('[name="endDate"]');
+  dateInput.min = todayStr();
+  endDateInput.min = dateInput.min;
+  dateInput.addEventListener('change', () => {
+    endDateInput.min = dateInput.value || dateInput.min;
+    if (dateInput.value && endDateInput.value < dateInput.value) endDateInput.value = dateInput.value;
+  });
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     const button = form.querySelector('button[type="submit"]');
@@ -310,6 +317,7 @@ function wireDayOffRequestForm(root, currentUser) {
         showToast(`Đã gửi yêu cầu. Admin cần xử lý ${impacted.length} lịch đang bị ảnh hưởng:\n${schedule}`, 'normal');
       } else showToast('Đã gửi yêu cầu nghỉ để quản trị viên xét duyệt.', 'success');
       form.reset();
+      endDateInput.min = dateInput.min;
       loadDayOffRequests(root);
     } catch (error) {
       showToast(error.message || 'Không thể gửi yêu cầu nghỉ.', 'danger');
@@ -325,7 +333,7 @@ async function loadDayOffRequests(root) {
     if (!list.isConnected) return;
     list.innerHTML = requests.length ? requests.map((request) => `
       <div class="staff-day-off-request-row">
-        <strong>${esc(request.date)} · ${{ pending: 'Chờ duyệt', approved: 'Đã duyệt', rejected: 'Đã từ chối' }[request.status] || esc(request.status)}</strong>
+        <strong>${formatDateRange(request.date, request.endDate)} · ${{ pending: 'Chờ duyệt', approved: 'Đã duyệt', rejected: 'Đã từ chối' }[request.status] || esc(request.status)}</strong>
         <span>${esc(request.reason)}${request.note ? ` · ${esc(request.note)}` : ''}</span>
       </div>
     `).join('') : '<p class="staff-day-off-empty">Chưa có yêu cầu nghỉ.</p>';
