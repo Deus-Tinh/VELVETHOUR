@@ -1013,7 +1013,7 @@ function renderStep4(container) {
           <strong style="display:block;margin-bottom:11px;">Chọn phương thức thanh toán</strong>
           <label style="display:flex;gap:10px;align-items:flex-start;padding:12px;border:1px solid #087f6e;border-radius:8px;background:white;cursor:pointer;">
             <input type="radio" name="bookingPaymentMethod" value="bank" checked />
-            <span><strong>Chuyển khoản VietQR · Techcombank</strong><small style="display:block;color:#64748b;margin-top:3px;">Quét mã có sẵn số tiền và mã đơn. Thanh toán đủ trong 3 phút để giữ lịch.</small></span>
+            <span><strong>Chuyển khoản VietQR</strong><small style="display:block;color:#64748b;margin-top:3px;">Quét mã có sẵn số tiền và mã đơn. Thanh toán đủ trong 3 phút để giữ lịch.</small></span>
           </label>
           <label aria-disabled="true" style="display:flex;gap:10px;align-items:flex-start;padding:12px;margin-top:8px;border:1px solid #e2e8f0;border-radius:8px;background:#f8fafc;color:#94a3b8;">
             <input type="radio" name="bookingPaymentMethod" value="card" disabled />

@@ -104,7 +104,7 @@ export async function renderPaymentCheckout(container, booking, initialInstructi
       <div style="text-align:center;">
         <div style="font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#087f6e;font-weight:700;">${booking.reschedulePayment ? 'Thanh toán phần chênh lệch · Giữ khung mới 03:00' : 'Thanh toán chuyển khoản · Giữ lịch 03:00'}</div>
         <h3 style="margin:9px 0 14px;font-family:var(--font-heading);">Quét mã VietQR</h3>
-        <img src="${esc(instructions.qrUrl)}" alt="Mã QR thanh toán Techcombank" style="width:min(100%,320px);height:auto;border:1px solid #e5e7eb;border-radius:12px;background:white;" />
+        <img src="${esc(instructions.qrUrl)}" alt="Mã QR thanh toán VietQR" style="width:min(100%,320px);height:auto;border:1px solid #e5e7eb;border-radius:12px;background:white;" />
         <div id="paymentCountdown" role="timer" style="margin:12px auto 0;display:inline-block;padding:7px 12px;border-radius:999px;background:#ecfdf5;color:#087f6e;font-weight:700;">Còn 03:00 để giữ chỗ</div>
       </div>
       <div>
@@ -163,7 +163,7 @@ export async function renderPaymentCheckout(container, booking, initialInstructi
         const stMsg = document.getElementById('paymentStatusMessage');
         const cDown = document.getElementById('paymentCountdown');
         if (stMsg) {
-          stMsg.innerHTML = '<strong>Đã ghi nhận thông tin chuyển khoản!</strong><br />Lễ tân đang kiểm tra giao dịch qua Techcombank và sẽ xác nhận lịch hẹn của bạn trong ít phút.';
+          stMsg.innerHTML = '<strong>Đã ghi nhận thông tin chuyển khoản!</strong><br />Lễ tân đang kiểm tra giao dịch và sẽ xác nhận lịch hẹn của bạn trong ít phút.';
           stMsg.style.background = '#ecfdf5';
           stMsg.style.color = '#065f46';
         }
@@ -220,7 +220,7 @@ export async function renderPaymentCheckout(container, booking, initialInstructi
         renderResult(container, { ...booking, refundRequest: current.refundRequest }, 'paid');
       } else if (current.paymentStatus === 'payment_submitted') {
         if (statusMessage) {
-          statusMessage.innerHTML = '<strong>Đã ghi nhận thông tin chuyển khoản!</strong><br />Lễ tân đang kiểm tra giao dịch qua Techcombank và sẽ xác nhận lịch hẹn của bạn trong ít phút.';
+          statusMessage.innerHTML = '<strong>Đã ghi nhận thông tin chuyển khoản!</strong><br />Lễ tân đang kiểm tra giao dịch và sẽ xác nhận lịch hẹn của bạn trong ít phút.';
           statusMessage.style.background = '#ecfdf5';
           statusMessage.style.color = '#065f46';
         }
